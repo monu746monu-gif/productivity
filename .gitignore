@@ -7,9 +7,45 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Dependencies
+node_modules/
+backend/venv/
+.venv/
+venv/
+
+# Environment variables and secrets
+.env
+.env.*
+backend/.env
+backend/.env.*
+!.env.example
+!backend/.env.example
+
+# Build output
+dist/
+dist-ssr/
+src-tauri/target/
+
+# Python
+__pycache__/
+.pycache/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local app data
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.sqlite-journal
+
+# Local generated audio
+backend/*.wav
+
+# Local config
 *.local
 
 # Editor directories and files

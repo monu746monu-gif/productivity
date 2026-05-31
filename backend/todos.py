@@ -46,7 +46,7 @@ def get_todos():
         SELECT id, title, completed
         FROM todos
         ORDER BY id DESC
-        LIMIT 10
+        LIMIT 20
     """)
 
     rows = cursor.fetchall()
@@ -68,3 +68,75 @@ def get_todos_text():
         lines.append(f"{todo_id}. {title} - {status}")
 
     return "\n".join(lines)
+
+
+def delete_todo_by_text(search_text: str):
+    setup_todo_db()
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT id, title
+        FROM todos
+        WHERE LOWER(title) LIKE ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (f"%{search_text.lower()}%",)
+    )
+
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        return None
+
+    todo_id, title = row
+
+    cursor.execute(
+        "DELETE FROM todos WHERE id = ?",
+        (todo_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return title
+
+
+def complete_todo_by_text(search_text: str):
+    setup_todo_db()
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT id, title
+        FROM todos
+        WHERE LOWER(title) LIKE ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (f"%{search_text.lower()}%",)
+    )
+
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        return None
+
+    todo_id, title = row
+
+    cursor.execute(
+        "UPDATE todos SET completed = 1 WHERE id = ?",
+        (todo_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return title
