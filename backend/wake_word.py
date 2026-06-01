@@ -4,6 +4,16 @@ import time
 import sqlite3
 from datetime import datetime
 from todos import add_todo, get_todos_text
+from ideas import save_idea, get_ideas_text
+from intent import (
+    TIME_PATTERN,
+    detect_intent,
+    has_idea_language,
+    has_reminder_language,
+    has_todo_language,
+    strip_command_words,
+)
+from reminders import add_reminder, get_reminders_text, parse_reminder_time
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -11,6 +21,11 @@ from recorder import record_audio
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+pending_action = {
+    "type": "",
+    "title": "",
+}
 
 
 def speak(text: str):
@@ -61,57 +76,135 @@ def get_today_usage_text():
         usage_lines.append(f"{app_name}: {minutes} minutes")
 
     return "\n".join(usage_lines)
+
+
+def save_reminder_from_parts(title: str, reminder_time: str):
+    remind_at = parse_reminder_time(reminder_time)
+
+    if not remind_at:
+        return None
+
+    add_reminder(title, remind_at.isoformat())
+    spoken_time = remind_at.strftime("%I:%M %p").lstrip("0")
+    return f"Okay Monu, I will remind you about {title} at {spoken_time}."
+
+
+def handle_pending_action(user_text: str):
+    if pending_action["type"] != "add_reminder":
+        return None
+
+    time_match = TIME_PATTERN.search(user_text)
+
+    if not time_match:
+        return None
+
+    reminder_time = time_match.group(0).strip()
+    title_from_reply = TIME_PATTERN.sub(" ", user_text)
+    title_from_reply = strip_command_words(
+        title_from_reply,
+        [
+            "remember",
+            "remember this",
+            "remind",
+            "remind me",
+            "reminder",
+            "this",
+            "that",
+            "i have",
+            "i have a",
+            "i have an",
+            "about",
+            "at",
+            "on",
+            "to",
+            "please",
+        ],
+    )
+    title = title_from_reply or pending_action["title"]
+
+    if not title or title == "reminder":
+        title = user_text
+
+    reply = save_reminder_from_parts(title, reminder_time)
+
+    if not reply:
+        return None
+
+    pending_action["type"] = ""
+    pending_action["title"] = ""
+
+    return reply
+
+
 def handle_local_actions(user_text: str):
-    text = user_text.lower().strip()
+    pending_reply = handle_pending_action(user_text)
 
-    add_keywords = [
-        "add",
-        "create",
-        "put",
-        "save",
-        "make"
-    ]
+    if pending_reply:
+        return pending_reply
 
-    todo_keywords = [
-        "todo",
-        "to do",
-        "task",
-        "checklist"
-    ]
+    intent_data = detect_intent(client, user_text)
+    intent = intent_data.get("intent", "general_chat")
 
-    if any(word in text for word in add_keywords) and any(word in text for word in todo_keywords):
-        task = user_text
+    if intent == "add_todo":
+        if not has_todo_language(user_text.lower()):
+            if has_reminder_language(user_text.lower()):
+                intent = "add_reminder"
+            elif has_idea_language(user_text.lower()):
+                intent = "save_idea"
+                intent_data["idea"] = intent_data.get("idea") or intent_data.get("task") or user_text
+            else:
+                return "Should I save that as an idea or add it as a todo, Monu?"
 
-        for phrase in [
-            "add",
-            "create",
-            "put",
-            "save",
-            "make",
-            "to my todo list",
-            "to todo list",
-            "to my to do list",
-            "to do list",
-            "todo list",
-            "todo",
-            "task",
-            "checklist",
-        ]:
-            task = task.replace(phrase, "")
-            task = task.replace(phrase.title(), "")
-
-        task = task.strip(" .")
+    if intent == "add_todo":
+        task = intent_data.get("task", "").strip()
 
         if not task:
-            task = user_text
+            return "What task should I add, Monu?"
 
         add_todo(task)
-
         return f"Done Monu, I added {task} to your todo list."
 
-    if "show my todo" in text or "show todos" in text or "what are my tasks" in text or "my todo list" in text:
+    if intent == "show_todos":
         todos_text = get_todos_text()
         return f"Here are your current tasks. {todos_text}"
+
+    if intent == "save_idea":
+        idea = intent_data.get("idea", "").strip()
+
+        if not idea:
+            return "What idea should I save, Monu?"
+
+        save_idea(idea)
+        return f"Got it, Monu. I saved that idea: {idea}"
+
+    if intent == "show_ideas":
+        ideas_text = get_ideas_text()
+        return f"Here are your saved ideas. {ideas_text}"
+
+    if intent == "add_reminder":
+        reminder_title = intent_data.get("reminder_title", "").strip()
+        reminder_time = intent_data.get("reminder_time", "").strip()
+
+        if not reminder_title:
+            pending_action["type"] = "add_reminder"
+            pending_action["title"] = ""
+            return "What should I remind you about, Monu?"
+
+        if not reminder_time:
+            pending_action["type"] = "add_reminder"
+            pending_action["title"] = reminder_title
+            return f"When should I remind you about {reminder_title}?"
+
+        reply = save_reminder_from_parts(reminder_title, reminder_time)
+
+        if not reply:
+            return f"I heard the reminder, but not the time. When should I remind you about {reminder_title}?"
+
+        return reply
+
+    if intent == "show_reminders":
+        reminders_text = get_reminders_text()
+        return f"Here are your upcoming reminders. {reminders_text}"
 
     return None
 
@@ -124,6 +217,8 @@ def ask_vexa(user_text: str):
 
     today_usage = get_today_usage_text()
     todos_text = get_todos_text()
+    ideas_text = get_ideas_text()
+    reminders_text = get_reminders_text()
 
     response = client.responses.create(
         model="gpt-4.1-mini",
@@ -137,10 +232,18 @@ Today's app usage data:
 Current todo list:
 {todos_text}
 
+Saved ideas:
+{ideas_text}
+
+Upcoming reminders:
+{reminders_text}
+
 If the user asks about Cursor, Chrome, Terminal, productivity time, work time, focus time, or app usage,
 answer directly using today's data.
 
 If the user asks about tasks or todos, answer using the todo list.
+If the user asks about saved ideas, answer using saved ideas.
+If the user asks about reminders, calls, meetings, or scheduled things, answer using upcoming reminders.
 
 Keep replies short, natural, and spoken-friendly.
 Do not say you do not have access to usage data.

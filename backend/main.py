@@ -8,11 +8,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from pydantic import BaseModel
 
-from intent import detect_intent
+from intent import (
+    TIME_PATTERN,
+    detect_intent,
+    has_idea_language,
+    has_reminder_language,
+    has_todo_language,
+    strip_command_words,
+)
 from ideas import save_idea, get_ideas_text
 from productivity import classify_app
 from recorder import record_audio
-from reminders import add_reminder, get_reminders_text
+from reminders import (
+    add_reminder,
+    get_reminders_text,
+    parse_reminder_time,
+    pop_due_reminders,
+)
 from todos import (
     add_todo,
     get_todos_text,
@@ -40,11 +52,17 @@ app.add_middleware(
 
 
 TRACKER_INTERVAL_SECONDS = 5
-USAGE_WINDOW_HOURS = 20
+USAGE_WINDOW_HOURS = 24
 
 
 class ChatRequest(BaseModel):
     message: str
+
+
+pending_action = {
+    "type": "",
+    "title": "",
+}
 
 
 @app.get("/")
@@ -57,6 +75,12 @@ def get_usage_rows():
     cursor = conn.cursor()
 
     start_time = (datetime.now() - timedelta(hours=USAGE_WINDOW_HOURS)).isoformat()
+
+    cursor.execute(
+        "DELETE FROM app_usage WHERE timestamp < ?",
+        (start_time,),
+    )
+    conn.commit()
 
     cursor.execute(
         """
@@ -128,7 +152,70 @@ App breakdown:
 """
 
 
+def save_reminder_from_parts(title: str, reminder_time: str):
+    remind_at = parse_reminder_time(reminder_time)
+
+    if not remind_at:
+        return None
+
+    add_reminder(title, remind_at.isoformat())
+    spoken_time = remind_at.strftime("%I:%M %p").lstrip("0")
+    return f"Okay Monu, I will remind you about {title} at {spoken_time}."
+
+
+def handle_pending_action(user_text: str):
+    if pending_action["type"] != "add_reminder":
+        return None
+
+    time_match = TIME_PATTERN.search(user_text)
+
+    if not time_match:
+        return None
+
+    reminder_time = time_match.group(0).strip()
+    title_from_reply = TIME_PATTERN.sub(" ", user_text)
+    title_from_reply = strip_command_words(
+        title_from_reply,
+        [
+            "remember",
+            "remember this",
+            "remind",
+            "remind me",
+            "reminder",
+            "this",
+            "that",
+            "i have",
+            "i have a",
+            "i have an",
+            "about",
+            "at",
+            "on",
+            "to",
+            "please",
+        ],
+    )
+    title = title_from_reply or pending_action["title"]
+
+    if not title or title == "reminder":
+        title = user_text
+
+    reply = save_reminder_from_parts(title, reminder_time)
+
+    if not reply:
+        return None
+
+    pending_action["type"] = ""
+    pending_action["title"] = ""
+
+    return reply
+
+
 def handle_local_actions(user_text: str):
+    pending_reply = handle_pending_action(user_text)
+
+    if pending_reply:
+        return pending_reply
+
     intent_data = detect_intent(client, user_text)
 
     intent = intent_data.get("intent", "general_chat")
@@ -139,6 +226,16 @@ def handle_local_actions(user_text: str):
     reminder_time = intent_data.get("reminder_time", "").strip()
 
     print("INTENT:", intent_data)
+
+    if intent == "add_todo":
+        if not has_todo_language(user_text.lower()):
+            if has_reminder_language(user_text.lower()):
+                intent = "add_reminder"
+            elif has_idea_language(user_text.lower()):
+                intent = "save_idea"
+                idea = idea or task or user_text
+            else:
+                return "Should I save that as an idea or add it as a todo, Monu?"
 
     if intent == "add_todo":
         if not task:
@@ -178,7 +275,7 @@ def handle_local_actions(user_text: str):
             return "What idea should I save, Monu?"
 
         save_idea(idea)
-        return f"Saved Monu, I stored your idea: {idea}"
+        return f"Got it, Monu. I saved that idea: {idea}"
 
     if intent == "show_ideas":
         ideas_text = get_ideas_text()
@@ -186,13 +283,21 @@ def handle_local_actions(user_text: str):
 
     if intent == "add_reminder":
         if not reminder_title:
+            pending_action["type"] = "add_reminder"
+            pending_action["title"] = ""
             return "What should I remind you about, Monu?"
 
         if not reminder_time:
+            pending_action["type"] = "add_reminder"
+            pending_action["title"] = reminder_title
             return f"When should I remind you about {reminder_title}?"
 
-        add_reminder(reminder_title, reminder_time)
-        return f"Okay Monu, I saved a reminder for {reminder_title} at {reminder_time}."
+        reply = save_reminder_from_parts(reminder_title, reminder_time)
+
+        if not reply:
+            return f"I heard the reminder, but not the time. When should I remind you about {reminder_title}?"
+
+        return reply
 
     if intent == "show_reminders":
         reminders_text = get_reminders_text()
@@ -475,6 +580,15 @@ def reminders():
     try:
         reminders_text = get_reminders_text()
         return {"reminders": reminders_text}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/reminders/due")
+def due_reminders():
+    try:
+        return {"reminders": pop_due_reminders()}
 
     except Exception as e:
         return {"error": str(e)}

@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the Vexa windows",
-  "windows": ["main", "launcher"],
+  "description": "Capability for the Vexa main window",
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "opener:default"

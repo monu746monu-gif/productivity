@@ -5,33 +5,26 @@
   "identifier": "com.monu.vexa",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "label": "launcher",
+        "label": "main",
         "title": "Vexa",
-        "width": 58,
-        "height": 58,
+        "width": 312,
+        "height": 480,
+        "minWidth": 300,
+        "minHeight": 440,
         "resizable": false,
         "decorations": false,
         "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true
-      },
-      {
-        "label": "main",
-        "title": "Vexa",
-        "width": 460,
-        "height": 640,
-        "minWidth": 380,
-        "minHeight": 520,
         "visible": false
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 DB_NAME = "vexa.db"
 TRACKER_INTERVAL_SECONDS = 5
-RESET_AFTER_HOURS = 20
+RESET_AFTER_HOURS = 24
 
 
 def get_active_app():
