@@ -1,11 +1,11 @@
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use tauri::{
     image::Image,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, PhysicalPosition, Rect, WindowEvent,
 };
+use tauri_plugin_shell::ShellExt;
+use tauri_plugin_shell::process::CommandEvent;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -13,30 +13,19 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-fn find_backend_dir() -> Option<PathBuf> {
-    let current_dir = std::env::current_dir().ok()?;
-    let candidates = [current_dir.join("backend"), current_dir.join("../backend")];
-
-    candidates
-        .into_iter()
-        .find(|path| path.join("main.py").is_file())
-}
-
-fn python_path(backend_dir: &Path) -> PathBuf {
-    backend_dir.join("venv/bin/python")
-}
-
-fn start_backend() {
-    if TcpStream::connect("127.0.0.1:8000").is_ok() {
-        return;
-    }
-
-    let Some(backend_dir) = find_backend_dir() else {
+fn start_local_backend_fallback() {
+    let Some(backend_dir) = std::env::current_dir()
+        .ok()
+        .and_then(|current_dir| {
+            [current_dir.join("backend"), current_dir.join("../backend")]
+                .into_iter()
+                .find(|path| path.join("main.py").is_file())
+        }) else {
         eprintln!("Vexa backend directory was not found.");
         return;
     };
 
-    let python = python_path(&backend_dir);
+    let python = backend_dir.join("venv/bin/python");
 
     if !python.is_file() {
         eprintln!(
@@ -46,7 +35,7 @@ fn start_backend() {
         return;
     }
 
-    if let Err(error) = Command::new(python)
+    if let Err(error) = std::process::Command::new(python)
         .args([
             "-m",
             "uvicorn",
@@ -57,12 +46,61 @@ fn start_backend() {
             "8000",
         ])
         .current_dir(backend_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
     {
-        eprintln!("Failed to start Vexa backend: {error}");
+        eprintln!("Failed to start Vexa backend fallback: {error}");
+    }
+}
+
+fn start_backend(app: &tauri::AppHandle) {
+    if TcpStream::connect("127.0.0.1:8000").is_ok() {
+        return;
+    }
+
+    match app.shell().sidecar("binaries/vexa-backend") {
+        Ok(command) => match command.spawn() {
+            Ok((mut rx, _child)) => {
+                tauri::async_runtime::spawn(async move {
+                    while let Some(event) = rx.recv().await {
+                        match event {
+                            CommandEvent::Stdout(line) => {
+                                eprintln!(
+                                    "Vexa sidecar stdout: {}",
+                                    String::from_utf8_lossy(&line)
+                                );
+                            }
+                            CommandEvent::Stderr(line) => {
+                                eprintln!(
+                                    "Vexa sidecar stderr: {}",
+                                    String::from_utf8_lossy(&line)
+                                );
+                            }
+                            CommandEvent::Error(error) => {
+                                eprintln!("Vexa sidecar error: {error}");
+                            }
+                            CommandEvent::Terminated(payload) => {
+                                eprintln!(
+                                    "Vexa sidecar terminated with code {:?} and signal {:?}",
+                                    payload.code, payload.signal
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
+            Err(error) => {
+                eprintln!("Failed to spawn Vexa sidecar backend: {error}");
+                start_local_backend_fallback();
+            }
+        },
+        Err(error) => {
+            eprintln!("Failed to prepare Vexa sidecar backend: {error}");
+            start_local_backend_fallback();
+        }
     }
 }
 
@@ -93,7 +131,13 @@ fn toggle_main_window_from_menu_bar(
     position: PhysicalPosition<f64>,
     rect: Rect,
 ) -> Result<(), String> {
-    show_or_hide_main_window(app, Some((position, rect)))?;
+    let was_visible = show_or_hide_main_window(app, Some((position, rect)))?;
+
+    if !was_visible {
+        app.emit_to("main", "vexa-start-listening", ())
+            .map_err(|error| error.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -173,6 +217,8 @@ fn show_or_hide_main_window(
     let is_visible = window.is_visible().map_err(|error| error.to_string())?;
 
     if is_visible {
+        app.emit_to("main", "vexa-stop-listening", ())
+            .map_err(|error| error.to_string())?;
         window.hide().map_err(|error| error.to_string())?;
         return Ok(true);
     }
@@ -219,9 +265,10 @@ fn create_menu_bar_icon(app: &tauri::AppHandle) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            start_backend();
+            start_backend(app.handle());
             create_menu_bar_icon(app.handle())?;
 
             if let Some(window) = app.get_webview_window("main") {
@@ -233,6 +280,10 @@ pub fn run() {
 
                         if let Err(error) = main_window.hide() {
                             eprintln!("Failed to hide Vexa main window: {error}");
+                        }
+
+                        if let Err(error) = main_window.emit("vexa-stop-listening", ()) {
+                            eprintln!("Failed to stop Vexa listening loop: {error}");
                         }
                     }
                 });

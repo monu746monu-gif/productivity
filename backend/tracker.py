@@ -2,11 +2,10 @@ import time
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta
+from storage import get_db_path
 
-
-DB_NAME = "vexa.db"
 TRACKER_INTERVAL_SECONDS = 5
-RESET_AFTER_HOURS = 24
+KEEP_HISTORY_DAYS = 14
 
 
 def get_active_app():
@@ -36,7 +35,7 @@ def get_active_app():
 
 
 def setup_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -52,7 +51,7 @@ def setup_db():
 
 
 def save_app_usage(app_name):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute(
@@ -65,14 +64,14 @@ def save_app_usage(app_name):
 
 
 def cleanup_old_usage():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
-    cutoff_time = (datetime.now() - timedelta(hours=RESET_AFTER_HOURS)).isoformat()
+    cutoff_date = (datetime.now().date() - timedelta(days=KEEP_HISTORY_DAYS)).isoformat()
 
     cursor.execute(
-        "DELETE FROM app_usage WHERE timestamp < ?",
-        (cutoff_time,)
+        "DELETE FROM app_usage WHERE substr(timestamp, 1, 10) < ?",
+        (cutoff_date,)
     )
 
     conn.commit()
@@ -84,7 +83,7 @@ def start_tracker(interval=TRACKER_INTERVAL_SECONDS):
 
     print("Vexa tracker started...")
     print(f"Tracking every {interval} seconds.")
-    print(f"Keeping only last {RESET_AFTER_HOURS} hours of data.")
+    print(f"Today starts from 0 at midnight. Keeping {KEEP_HISTORY_DAYS} days of history.")
     print("Press Ctrl + C to stop.")
 
     loop_count = 0

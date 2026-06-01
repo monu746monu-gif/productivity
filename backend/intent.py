@@ -239,6 +239,16 @@ def detect_intent(client: OpenAI, user_text: str):
     if rule_based_intent:
         return rule_based_intent
 
+    if client is None:
+        return {
+            "intent": "general_chat",
+            "task": "",
+            "app_name": "",
+            "idea": "",
+            "reminder_title": "",
+            "reminder_time": "",
+        }
+
     response = client.responses.create(
         model="gpt-4.1-mini",
         instructions="""

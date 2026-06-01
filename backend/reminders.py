@@ -1,8 +1,7 @@
 import sqlite3
 import re
 from datetime import datetime, timedelta
-
-DB_NAME = "vexa.db"
+from storage import get_db_path
 
 
 def parse_reminder_time(reminder_time: str):
@@ -62,7 +61,7 @@ def format_reminder_time(remind_at: str):
 
 
 def setup_reminders_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -82,7 +81,7 @@ def setup_reminders_db():
 def add_reminder(title: str, remind_at: str):
     setup_reminders_db()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute(
@@ -102,7 +101,7 @@ def get_due_reminders():
 
     now = datetime.now().isoformat()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute(
@@ -122,7 +121,7 @@ def get_due_reminders():
 
 
 def mark_reminder_done(reminder_id: int):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute(
@@ -154,7 +153,7 @@ def pop_due_reminders():
 def get_reminders_text():
     setup_reminders_db()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute(

@@ -1,11 +1,10 @@
 import sqlite3
 from datetime import datetime
-
-DB_NAME = "vexa.db"
+from storage import get_db_path
 
 
 def setup_ideas_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -23,7 +22,7 @@ def setup_ideas_db():
 def save_idea(content: str):
     setup_ideas_db()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute(
@@ -38,7 +37,7 @@ def save_idea(content: str):
 def get_recent_ideas(limit=10):
     setup_ideas_db()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute(

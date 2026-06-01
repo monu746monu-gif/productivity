@@ -1,12 +1,11 @@
 import sounddevice as sd
 from scipy.io.wavfile import write
 import numpy as np
+from pathlib import Path
+from tempfile import gettempdir
 
 
-def record_audio(filename="command.wav", duration=8, sample_rate=16000):
-    print("Available microphones:")
-    print(sd.query_devices())
-
+def record_audio(filename="command.wav", duration=4, sample_rate=16000):
     print("Recording... speak clearly now.")
 
     audio = sd.rec(
@@ -26,7 +25,12 @@ def record_audio(filename="command.wav", duration=8, sample_rate=16000):
     # Convert to int16 WAV
     audio_int16 = (audio * 32767).astype(np.int16)
 
-    write(filename, sample_rate, audio_int16)
+    output_path = Path(filename)
 
-    print(f"Saved recording to {filename}")
-    return filename
+    if not output_path.is_absolute():
+        output_path = Path(gettempdir()) / output_path
+
+    write(str(output_path), sample_rate, audio_int16)
+
+    print(f"Saved recording to {output_path}")
+    return str(output_path)

@@ -1,6 +1,50 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { API_BASE_URL, apiUrl } from "./api";
 import "./App.css";
+
+const VOICE_RECORD_MS = 4000;
+
+async function recordVoiceClip(durationMs = VOICE_RECORD_MS) {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    throw new Error("Audio recording is not supported on this device.");
+  }
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const chunks: BlobPart[] = [];
+  const mimeType = MediaRecorder.isTypeSupported("audio/webm")
+    ? "audio/webm"
+    : "";
+  const recorder = new MediaRecorder(
+    stream,
+    mimeType ? { mimeType } : undefined,
+  );
+
+  return new Promise<Blob>((resolve, reject) => {
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        chunks.push(event.data);
+      }
+    };
+
+    recorder.onerror = () => {
+      stream.getTracks().forEach((track) => track.stop());
+      reject(new Error("Could not record audio."));
+    };
+
+    recorder.onstop = () => {
+      stream.getTracks().forEach((track) => track.stop());
+      resolve(new Blob(chunks, { type: mimeType || "audio/webm" }));
+    };
+
+    recorder.start();
+    window.setTimeout(() => {
+      if (recorder.state !== "inactive") {
+        recorder.stop();
+      }
+    }, durationMs);
+  });
+}
 
 function MainApp() {
   const [status, setStatus] = useState("Sleeping...");
@@ -8,7 +52,15 @@ function MainApp() {
   const [isListening, setIsListening] = useState(false);
   const [dashboard, setDashboard] = useState<any>(null);
   const [dueReminder, setDueReminder] = useState<any>(null);
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [apiKeyManaged, setApiKeyManaged] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [settingsMessage, setSettingsMessage] = useState("");
   const isListeningRef = useRef(false);
+  const continuousConversationRef = useRef(false);
+  const listeningRunIdRef = useRef(0);
+  const startListeningRef = useRef<(continuous?: boolean) => void>(() => {});
 
   const speak = useCallback((text: string) => {
     const utterance = new SpeechSynthesisUtterance(text);
@@ -24,8 +76,8 @@ function MainApp() {
       utterance.voice = selectedVoice;
     }
 
-    utterance.rate = 1.12;
-    utterance.pitch = 1.05;
+    utterance.rate = 1.02;
+    utterance.pitch = 1.04;
     utterance.volume = 1;
 
     window.speechSynthesis.cancel();
@@ -33,6 +85,12 @@ function MainApp() {
 
     utterance.onend = () => {
       setStatus("Sleeping...");
+
+      if (continuousConversationRef.current) {
+        window.setTimeout(() => {
+          startListeningRef.current(true);
+        }, 350);
+      }
     };
   }, []);
 
@@ -42,7 +100,7 @@ function MainApp() {
         setStatus("Refreshing...");
       }
 
-      const res = await fetch("http://127.0.0.1:8000/dashboard");
+      const res = await fetch(apiUrl("/dashboard"));
       const data = await res.json();
       setDashboard(data);
 
@@ -60,9 +118,66 @@ function MainApp() {
     }
   }, []);
 
+  const loadSettings = useCallback(async () => {
+    try {
+      const res = await fetch(apiUrl("/settings"));
+      const data = await res.json();
+      const configured = Boolean(data.openai_api_key_configured);
+      const managed = Boolean(data.openai_api_key_managed);
+
+      setApiKeyConfigured(configured);
+      setApiKeyManaged(managed);
+      setSettingsOpen(!configured);
+
+      if (!configured) {
+        setReply("Add your OpenAI API key to finish setup.");
+      }
+    } catch (error) {
+      console.error(error);
+      setSettingsOpen(true);
+      setSettingsMessage("Backend is not running yet.");
+    }
+  }, []);
+
+  const saveApiKey = useCallback(async () => {
+    const apiKey = apiKeyInput.trim();
+
+    if (!apiKey) {
+      setSettingsMessage("Paste your OpenAI API key first.");
+      return;
+    }
+
+    try {
+      setSettingsMessage("Saving...");
+
+      const res = await fetch(apiUrl("/settings/openai-key"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ api_key: apiKey }),
+      });
+      const data = await res.json();
+
+      if (!data.saved) {
+        setSettingsMessage(data.error || "Could not save the key.");
+        return;
+      }
+
+      setApiKeyConfigured(true);
+      setSettingsOpen(false);
+      setApiKeyInput("");
+      setSettingsMessage("Saved.");
+      setReply("Setup is done. Tap speak or open me from the menu bar.");
+    } catch (error) {
+      console.error(error);
+      setSettingsMessage("Could not reach the backend.");
+    }
+  }, [apiKeyInput]);
+
   const checkDueReminders = useCallback(async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/reminders/due");
+      const res = await fetch(apiUrl("/reminders/due"));
       const data = await res.json();
       const reminders = data.reminders || [];
 
@@ -89,38 +204,74 @@ function MainApp() {
     }
   }, [loadDashboard, speak]);
 
-  const startListening = useCallback(async () => {
+  const startListening = useCallback(async (continuous = true) => {
+    if (!apiKeyConfigured) {
+      continuousConversationRef.current = false;
+      setSettingsOpen(true);
+      setReply("Add your OpenAI API key first.");
+      return;
+    }
+
     if (isListeningRef.current) {
       return;
     }
 
     try {
+      continuousConversationRef.current = continuous;
       isListeningRef.current = true;
+      const runId = listeningRunIdRef.current + 1;
+      listeningRunIdRef.current = runId;
       setIsListening(true);
       setStatus("Listening...");
-      setReply("Listening... speak now.");
+      setReply("I'm listening.");
 
-      const res = await fetch("http://127.0.0.1:8000/voice-command", {
+      const audio = await recordVoiceClip();
+      const formData = new FormData();
+      formData.append("file", audio, "voice.webm");
+
+      const res = await fetch(apiUrl("/voice-command-audio"), {
         method: "POST",
+        body: formData,
       });
 
       const data = await res.json();
 
+      if (runId !== listeningRunIdRef.current) {
+        return;
+      }
+
+      const transcript = String(data.transcript || "").toLowerCase();
+      const shouldStop =
+        transcript.includes("stop listening") ||
+        transcript.includes("stop conversation") ||
+        transcript.includes("go to sleep") ||
+        transcript.includes("sleep now");
+
+      if (shouldStop) {
+        continuousConversationRef.current = false;
+      }
+
       setStatus("Speaking...");
-      setReply(data.reply || "Done.");
-      speak(data.reply || "Done.");
+      setReply(shouldStop ? "Okay Monu, I will stop listening." : data.reply || "Done.");
+      speak(shouldStop ? "Okay Monu, I will stop listening." : data.reply || "Done.");
       loadDashboard();
     } catch (error) {
       console.error(error);
+      continuousConversationRef.current = false;
       setStatus("Error");
-      setReply("Voice backend is not running.");
+      setReply("I could not record or reach Vexa. Check microphone permission and backend.");
     } finally {
       setIsListening(false);
       isListeningRef.current = false;
     }
-  }, [loadDashboard, speak]);
+  }, [apiKeyConfigured, loadDashboard, speak]);
 
   useEffect(() => {
+    startListeningRef.current = startListening;
+  }, [startListening]);
+
+  useEffect(() => {
+    loadSettings();
     loadDashboard();
     checkDueReminders();
 
@@ -130,21 +281,48 @@ function MainApp() {
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [checkDueReminders, loadDashboard]);
+  }, [checkDueReminders, loadDashboard, loadSettings]);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenStart: (() => void) | undefined;
+    let unlistenStop: (() => void) | undefined;
 
     listen("vexa-start-listening", () => {
-      startListening();
+      if (!apiKeyConfigured) {
+        setSettingsOpen(true);
+        setReply("Add your OpenAI API key first.");
+        return;
+      }
+
+      if (isListeningRef.current || continuousConversationRef.current) {
+        return;
+      }
+
+      continuousConversationRef.current = true;
+      setStatus("Speaking...");
+      setReply("Hey, what's up?");
+      speak("Hey, what's up?");
     }).then((cleanup) => {
-      unlisten = cleanup;
+      unlistenStart = cleanup;
+    });
+
+    listen("vexa-stop-listening", () => {
+      continuousConversationRef.current = false;
+      listeningRunIdRef.current += 1;
+      window.speechSynthesis.cancel();
+      setIsListening(false);
+      isListeningRef.current = false;
+      setStatus("Sleeping...");
+      setReply("Sleeping...");
+    }).then((cleanup) => {
+      unlistenStop = cleanup;
     });
 
     return () => {
-      unlisten?.();
+      unlistenStart?.();
+      unlistenStop?.();
     };
-  }, [startListening]);
+  }, [apiKeyConfigured, speak]);
 
   const orbClass =
     status === "Listening..."
@@ -186,10 +364,61 @@ function MainApp() {
           <h1>Vexa</h1>
           <p className="subtitle">Your macOS productivity assistant</p>
 
+          {settingsOpen && (
+            <div className="setup-card">
+              {apiKeyConfigured ? (
+                <div>
+                  <strong>Connected</strong>
+                  <p>
+                    {apiKeyManaged
+                      ? "Vexa cloud is ready. Your app will use the hosted assistant."
+                      : "Your OpenAI API key is saved on this Mac."}
+                  </p>
+                  <p>Backend: {API_BASE_URL}</p>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <strong>Setup</strong>
+                    <p>Add your OpenAI API key. It stays on this Mac.</p>
+                  </div>
+
+                  <input
+                    type="password"
+                    value={apiKeyInput}
+                    onChange={(event) => setApiKeyInput(event.target.value)}
+                    placeholder="OpenAI API key"
+                  />
+
+                  <button onClick={saveApiKey}>Save key</button>
+                </>
+              )}
+
+              <p className="setup-note">
+                Also allow Microphone and Accessibility permissions when macOS asks.
+              </p>
+
+              {settingsMessage && (
+                <p className="setup-message">{settingsMessage}</p>
+              )}
+            </div>
+          )}
+
           <p className="reply-text">{reply}</p>
 
-          <button className="primary-btn" onClick={startListening}>
+          <button
+            className="primary-btn"
+            disabled={!apiKeyConfigured}
+            onClick={() => startListening(true)}
+          >
             {isListening ? "Listening..." : "Speak to Vexa"}
+          </button>
+
+          <button
+            className="secondary-btn"
+            onClick={() => setSettingsOpen((open) => !open)}
+          >
+            Settings
           </button>
 
           <button className="secondary-btn" onClick={() => loadDashboard(true)}>
@@ -204,7 +433,7 @@ function MainApp() {
               <h2>Productivity Dashboard</h2>
             </div>
             <span className="window-pill">
-              {dashboard?.window?.replaceAll("_", " ") || "last 24 hours"}
+              {dashboard?.window?.replaceAll("_", " ") || "today"}
             </span>
           </div>
 
@@ -225,11 +454,26 @@ function MainApp() {
             </div>
           </div>
 
-          <div className="section-block">
-            <h3>Top Apps</h3>
+          <div className="comparison-strip">
+            <div>
+              <span>Yesterday productive</span>
+              <strong>{dashboard?.yesterday_totals?.productive ?? 0} min</strong>
+            </div>
 
-            {dashboard?.top_apps?.length ? (
-              dashboard.top_apps.map((app: any) => (
+            <div>
+              <span>Today vs yesterday</span>
+              <strong>
+                {(dashboard?.comparison?.productive_delta ?? 0) >= 0 ? "+" : ""}
+                {dashboard?.comparison?.productive_delta ?? 0} min
+              </strong>
+            </div>
+          </div>
+
+          <div className="section-block">
+            <h3>Top Apps Today</h3>
+
+            {dashboard?.top_apps_today?.length ? (
+              dashboard.top_apps_today.map((app: any) => (
                 <div className="app-row" key={app.app_name}>
                   <div>
                     <strong>{app.app_name}</strong>

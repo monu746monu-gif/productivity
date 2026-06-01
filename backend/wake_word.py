@@ -3,6 +3,7 @@ import subprocess
 import time
 import sqlite3
 from datetime import datetime
+from storage import get_db_path
 from todos import add_todo, get_todos_text
 from ideas import save_idea, get_ideas_text
 from intent import (
@@ -45,7 +46,7 @@ def transcribe_audio(audio_file: str, prompt: str = ""):
 
 
 def get_today_usage_text():
-    conn = sqlite3.connect("vexa.db", timeout=1)
+    conn = sqlite3.connect(get_db_path(), timeout=1)
     cursor = conn.cursor()
 
     today = datetime.now().date().isoformat()

@@ -1,11 +1,10 @@
 import sqlite3
 from datetime import datetime
-
-DB_NAME = "vexa.db"
+from storage import get_db_path
 
 
 def setup_todo_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -24,7 +23,7 @@ def setup_todo_db():
 def add_todo(title: str):
     setup_todo_db()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute(
@@ -39,7 +38,7 @@ def add_todo(title: str):
 def get_todos():
     setup_todo_db()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -73,7 +72,7 @@ def get_todos_text():
 def delete_todo_by_text(search_text: str):
     setup_todo_db()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute(
@@ -109,7 +108,7 @@ def delete_todo_by_text(search_text: str):
 def complete_todo_by_text(search_text: str):
     setup_todo_db()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
 
     cursor.execute(

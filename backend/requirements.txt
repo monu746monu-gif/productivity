@@ -32,6 +32,7 @@ pyobjc-core==12.0
 pyobjc-framework-Cocoa==12.0
 pyobjc-framework-Quartz==12.0
 python-dotenv==1.2.1
+python-multipart==0.0.20
 requests==2.32.5
 scikit-learn==1.6.1
 scipy==1.13.1
