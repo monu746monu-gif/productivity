@@ -9,8 +9,10 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from intent import detect_intent
+from ideas import save_idea, get_ideas_text
 from productivity import classify_app
 from recorder import record_audio
+from reminders import add_reminder, get_reminders_text
 from todos import (
     add_todo,
     get_todos_text,
@@ -132,6 +134,9 @@ def handle_local_actions(user_text: str):
     intent = intent_data.get("intent", "general_chat")
     task = intent_data.get("task", "").strip()
     app_name = intent_data.get("app_name", "").strip()
+    idea = intent_data.get("idea", "").strip()
+    reminder_title = intent_data.get("reminder_title", "").strip()
+    reminder_time = intent_data.get("reminder_time", "").strip()
 
     print("INTENT:", intent_data)
 
@@ -168,6 +173,31 @@ def handle_local_actions(user_text: str):
         todos_text = get_todos_text()
         return f"Here are your current tasks. {todos_text}"
 
+    if intent == "save_idea":
+        if not idea:
+            return "What idea should I save, Monu?"
+
+        save_idea(idea)
+        return f"Saved Monu, I stored your idea: {idea}"
+
+    if intent == "show_ideas":
+        ideas_text = get_ideas_text()
+        return f"Here are your saved ideas. {ideas_text}"
+
+    if intent == "add_reminder":
+        if not reminder_title:
+            return "What should I remind you about, Monu?"
+
+        if not reminder_time:
+            return f"When should I remind you about {reminder_title}?"
+
+        add_reminder(reminder_title, reminder_time)
+        return f"Okay Monu, I saved a reminder for {reminder_title} at {reminder_time}."
+
+    if intent == "show_reminders":
+        reminders_text = get_reminders_text()
+        return f"Here are your upcoming reminders. {reminders_text}"
+
     if intent == "ask_usage":
         usage_text = get_today_usage_text()
         productivity_text = get_productivity_summary_text()
@@ -198,6 +228,8 @@ Do not say you do not have access to usage data.
         usage_text = get_today_usage_text()
         productivity_text = get_productivity_summary_text()
         todos_text = get_todos_text()
+        ideas_text = get_ideas_text()
+        reminders_text = get_reminders_text()
 
         response = client.responses.create(
             model="gpt-4.1-mini",
@@ -214,6 +246,12 @@ Productivity summary:
 Current todo list:
 {todos_text}
 
+Saved ideas:
+{ideas_text}
+
+Upcoming reminders:
+{reminders_text}
+
 Create a short spoken daily productivity report.
 Include:
 1. productive time
@@ -223,7 +261,7 @@ Include:
 5. one improvement suggestion
 
 Keep it natural, friendly, and under 6 sentences.
-Do not say you do not have access to usage data or todos.
+Do not say you do not have access to usage data, todos, ideas, or reminders.
 """,
             input=user_text,
         )
@@ -243,6 +281,8 @@ def chat(request: ChatRequest):
     usage_text = get_today_usage_text()
     productivity_text = get_productivity_summary_text()
     todos_text = get_todos_text()
+    ideas_text = get_ideas_text()
+    reminders_text = get_reminders_text()
 
     response = client.responses.create(
         model="gpt-4.1-mini",
@@ -259,13 +299,23 @@ Productivity summary:
 Current todo list:
 {todos_text}
 
+Saved ideas:
+{ideas_text}
+
+Upcoming reminders:
+{reminders_text}
+
 If the user asks about app usage, work time, productivity, Cursor, Chrome, Terminal, or focus time,
 answer using the app usage data and productivity summary.
 
 If the user asks about todos or tasks, answer using the current todo list.
 
+If the user asks about saved ideas, answer using saved ideas.
+
+If the user asks about reminders, calls, meetings, or scheduled things, answer using upcoming reminders.
+
 Keep replies short, natural, and spoken-friendly.
-Do not say you do not have access to usage data or todos.
+Do not say you do not have access to usage data, todos, ideas, or reminders.
 """,
         input=request.message,
     )
@@ -286,7 +336,8 @@ def voice_command():
                 "The user is speaking English or Hinglish to an AI productivity "
                 "assistant named Vexa. Terms may include Cursor, Chrome, Terminal, "
                 "productivity, todo, checklist, app usage, work time, delete task, "
-                "remove task, mark task done, daily report, and productivity summary."
+                "remove task, mark task done, daily report, productivity summary, "
+                "save idea, remember idea, meeting, call, and reminder."
             ),
         )
 
@@ -304,10 +355,14 @@ def voice_command():
     usage_text = get_today_usage_text()
     productivity_text = get_productivity_summary_text()
     todos_text = get_todos_text()
+    ideas_text = get_ideas_text()
+    reminders_text = get_reminders_text()
 
     print("USAGE:", usage_text)
     print("PRODUCTIVITY:", productivity_text)
     print("TODOS:", todos_text)
+    print("IDEAS:", ideas_text)
+    print("REMINDERS:", reminders_text)
 
     response = client.responses.create(
         model="gpt-4.1-mini",
@@ -324,14 +379,24 @@ Productivity summary:
 Current todo list:
 {todos_text}
 
+Saved ideas:
+{ideas_text}
+
+Upcoming reminders:
+{reminders_text}
+
 If the user asks about Cursor, Chrome, Terminal, productivity time, work time, focus time, or app usage,
 answer directly using the app usage data and productivity summary.
 
 If the user asks about todos or tasks, answer using the current todo list.
 
-If the user asks for a daily report, summarize productivity, top apps, pending tasks, and one improvement suggestion.
+If the user asks about saved ideas, answer using saved ideas.
 
-Do not say you do not have access to usage data or todos.
+If the user asks about reminders, calls, meetings, or scheduled things, answer using upcoming reminders.
+
+If the user asks for a daily report, summarize productivity, top apps, pending tasks, saved ideas, reminders, and one improvement suggestion.
+
+Do not say you do not have access to usage data, todos, ideas, or reminders.
 Keep replies short, natural, and spoken-friendly.
 """,
         input=user_text,
@@ -395,11 +460,30 @@ def todos():
         return {"error": str(e)}
 
 
+@app.get("/ideas")
+def ideas():
+    try:
+        ideas_text = get_ideas_text()
+        return {"ideas": ideas_text}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/reminders")
+def reminders():
+    try:
+        reminders_text = get_reminders_text()
+        return {"reminders": reminders_text}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/dashboard")
 def dashboard():
     try:
         rows = get_usage_rows()
-        todos_text = get_todos_text()
 
         totals = {
             "productive": 0,
@@ -432,8 +516,10 @@ def dashboard():
                 "distracting": round(totals["distracting"], 2),
             },
             "top_apps": top_apps[:5],
-            "todos": todos_text,
+            "todos": get_todos_text(),
+            "ideas": get_ideas_text(),
+            "reminders": get_reminders_text(),
         }
 
     except Exception as e:
-        return {"error": str(e)}    
+        return {"error": str(e)}
