@@ -1,27 +1,93 @@
-import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { PointerEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+function currentWindowLabel() {
+  return (window as any).__TAURI_INTERNALS__
+    ? getCurrentWindow().label
+    : "main";
+}
 
-type VexaResponse = {
-  transcript?: string;
-  reply: string;
-};
+function LauncherApp() {
+  const pointerStart = useRef({ x: 0, y: 0 });
+  const didDrag = useRef(false);
 
-function App() {
+  async function toggleMainWindow() {
+    if (didDrag.current) {
+      didDrag.current = false;
+      return;
+    }
+
+    try {
+      await invoke("toggle_main_window");
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  async function startDrag(event: PointerEvent<HTMLButtonElement>) {
+    pointerStart.current = { x: event.clientX, y: event.clientY };
+    didDrag.current = false;
+  }
+
+  async function dragLauncher(event: PointerEvent<HTMLButtonElement>) {
+    const distance =
+      Math.abs(event.clientX - pointerStart.current.x) +
+      Math.abs(event.clientY - pointerStart.current.y);
+
+    if (distance < 6 || didDrag.current) {
+      return;
+    }
+
+    didDrag.current = true;
+
+    try {
+      await getCurrentWindow().startDragging();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  return (
+    <main className="launcher-app" data-tauri-drag-region>
+      <button
+        className="launcher-button"
+        type="button"
+        aria-label="Open Vexa"
+        onClick={toggleMainWindow}
+        onPointerDown={startDrag}
+        onPointerMove={dragLauncher}
+      >
+        <span className="launcher-orb">V</span>
+      </button>
+    </main>
+  );
+}
+
+function MainApp() {
   const [status, setStatus] = useState("Sleeping...");
-  const [input, setInput] = useState("");
-  const [transcript, setTranscript] = useState("");
-  const [reply, setReply] = useState("Hi Monu, ask me anything.");
+  const [reply, setReply] = useState("Say Hey Vexa, or tap the voice button.");
   const [isListening, setIsListening] = useState(false);
-  const [usage, setUsage] = useState<any[]>([]);
-
+  const [dashboard, setDashboard] = useState<any>(null);
 
   function speak(text: string) {
     const utterance = new SpeechSynthesisUtterance(text);
 
-    utterance.rate = 1.15;
-    utterance.pitch = 1.12;
+    const voices = window.speechSynthesis.getVoices();
+
+    const selectedVoice =
+      voices.find((v) => v.name.includes("Samantha")) ||
+      voices.find((v) => v.name.includes("Victoria")) ||
+      voices.find((v) => v.lang.includes("en"));
+
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+    }
+
+    utterance.rate = 1.12;
+    utterance.pitch = 1.05;
     utterance.volume = 1;
 
     window.speechSynthesis.cancel();
@@ -32,143 +98,155 @@ function App() {
     };
   }
 
-  async function askVexa(message?: string) {
-    const finalMessage = (message || input).trim();
-
-    if (!finalMessage) return;
-
+  async function startListening() {
     try {
-      setStatus("Thinking...");
+      setIsListening(true);
+      setStatus("Listening...");
+      setReply("Listening... speak now.");
 
-      const res = await fetch(`${API_BASE_URL}/chat`, {
+      const res = await fetch("http://127.0.0.1:8000/voice-command", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: finalMessage,
-        }),
       });
 
-      if (!res.ok) {
-        throw new Error(`Backend returned ${res.status}`);
-      }
+      const data = await res.json();
 
-      const data = (await res.json()) as VexaResponse;
-
-      if (typeof data.reply !== "string") {
-        throw new Error("Backend response must include a reply string.");
-      }
-
-      setTranscript(typeof data.transcript === "string" ? data.transcript : finalMessage);
-      setReply(data.reply);
       setStatus("Speaking...");
-      speak(data.reply);
-      setInput("");
+      setReply(data.reply || "Done.");
+      speak(data.reply || "Done.");
+      loadDashboard();
     } catch (error) {
       console.error(error);
       setStatus("Error");
-      setReply("Backend is not running or returned an invalid response.");
+      setReply("Voice backend is not running.");
+    } finally {
+      setIsListening(false);
     }
-  }async function loadTodayUsage() {
-  try {
-    setStatus("Loading usage...");
-
-    const res = await fetch("http://127.0.0.1:8000/today-usage");
-    const data = await res.json();
-
-    setUsage(data.usage || []);
-    setStatus("Sleeping...");
-  } catch (error) {
-    console.error(error);
-    setStatus("Error");
-    setReply("Could not load today's usage. Make sure backend is running.");
   }
-}
-async function startListening() {
-  try {
-    setIsListening(true);
-    setStatus("Listening...");
-    setReply("Listening...");
 
-    const res = await fetch(`${API_BASE_URL}/voice-command`, {
-      method: "POST",
-    });
-
-    if (!res.ok) {
-      throw new Error(`Backend returned ${res.status}`);
+  async function loadDashboard() {
+    try {
+      const res = await fetch("http://127.0.0.1:8000/dashboard");
+      const data = await res.json();
+      setDashboard(data);
+    } catch (error) {
+      console.error(error);
     }
-
-    const data = (await res.json()) as VexaResponse;
-
-    if (typeof data.transcript !== "string" || typeof data.reply !== "string") {
-      throw new Error("Backend response must include transcript and reply strings.");
-    }
-
-    setStatus("Speaking...");
-    setTranscript(data.transcript);
-    setReply(data.reply);
-
-    speak(data.reply);
-  } catch (error) {
-    console.error(error);
-    setStatus("Error");
-    setReply("Voice backend is not running or returned an invalid response.");
-  } finally {
-    setIsListening(false);
   }
-}
-    
+
+  useEffect(() => {
+    loadDashboard();
+
+    const interval = setInterval(() => {
+      loadDashboard();
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const orbClass =
+    status === "Listening..."
+      ? "orb listening"
+      : status === "Thinking..."
+      ? "orb thinking"
+      : status === "Speaking..."
+      ? "orb speaking"
+      : "orb";
 
   return (
     <main className="app">
-      <div className="assistant-card">
-        <div className={isListening ? "orb listening" : "orb"}>V</div>
+      <div className="background-glow glow-one" />
+      <div className="background-glow glow-two" />
 
-        <h1>Vexa</h1>
+      <section className="shell">
+        <div className="assistant-panel">
+          <div className="top-pill">
+            <span className="pulse-dot" />
+            Voice-first AI companion
+          </div>
 
-        <p className="subtitle">Your AI productivity companion</p>
+          <div className={orbClass}>
+            <div className="orb-inner">V</div>
+          </div>
 
-        <div className="status-box">
-          <p>Status</p>
-          <h2>{status}</h2>
+          <h1>Vexa</h1>
+          <p className="subtitle">Your macOS productivity assistant</p>
+
+          <div className="status-card">
+            <span>Status</span>
+            <strong>{status}</strong>
+          </div>
+
+          <p className="reply-text">{reply}</p>
+
+          <button className="primary-btn" onClick={startListening}>
+            {isListening ? "Listening..." : "Speak to Vexa"}
+          </button>
+
+          <button className="secondary-btn" onClick={loadDashboard}>
+            Refresh dashboard
+          </button>
         </div>
 
-        {transcript && (
-          <p className="transcript">
-            You said: <span>{transcript}</span>
-          </p>
-        )}
+        <div className="dashboard-panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Live summary</p>
+              <h2>Productivity Dashboard</h2>
+            </div>
+            <span className="window-pill">
+              {dashboard?.window?.replaceAll("_", " ") || "last 20 hours"}
+            </span>
+          </div>
 
-        <p className="reply">{reply}</p>
+          <div className="stats-grid">
+            <div className="stat-card">
+              <span>Productive</span>
+              <strong>{dashboard?.totals?.productive ?? 0} min</strong>
+            </div>
 
-        
-<button className="secondary-btn" onClick={loadTodayUsage}>
-  Show Today&apos;s Usage
-</button>
-        <button onClick={() => askVexa()}>Ask Vexa</button>
+            <div className="stat-card">
+              <span>Neutral</span>
+              <strong>{dashboard?.totals?.neutral ?? 0} min</strong>
+            </div>
 
-        <button className="secondary-btn" onClick={startListening}>
-          {isListening ? "Listening..." : "Speak to Vexa"}
-        </button>
-        <div className="usage-box">
-  <h3>Today&apos;s Usage</h3>
+            <div className="stat-card danger">
+              <span>Distracting</span>
+              <strong>{dashboard?.totals?.distracting ?? 0} min</strong>
+            </div>
+          </div>
 
-  {usage.length === 0 ? (
-    <p>No usage data yet.</p>
-  ) : (
-    usage.map((item) => (
-      <div className="usage-row" key={item.app_name}>
-        <span>{item.app_name}</span>
-        <strong>{item.minutes} min</strong>
-      </div>
-    ))
-  )}
-</div>
+          <div className="section-block">
+            <h3>Top Apps</h3>
 
-      </div>
+            {dashboard?.top_apps?.length ? (
+              dashboard.top_apps.map((app: any) => (
+                <div className="app-row" key={app.app_name}>
+                  <div>
+                    <strong>{app.app_name}</strong>
+                    <span>{app.category}</span>
+                  </div>
+                  <p>{app.minutes} min</p>
+                </div>
+              ))
+            ) : (
+              <p className="empty-text">No usage data yet.</p>
+            )}
+          </div>
+
+          <div className="section-block">
+            <h3>Todos</h3>
+            <p className="todo-preview">
+              {dashboard?.todos || "No todos yet."}
+            </p>
+          </div>
+        </div>
+      </section>
     </main>
   );
+}
+
+function App() {
+  return currentWindowLabel() === "launcher" ? <LauncherApp /> : <MainApp />;
 }
 
 export default App;

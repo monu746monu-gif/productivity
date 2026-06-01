@@ -1,6 +1,7 @@
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use tauri::{Manager, WindowEvent};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -61,15 +62,48 @@ fn start_backend() {
     }
 }
 
+#[tauri::command]
+fn toggle_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window was not found.".to_string())?;
+
+    if window.is_visible().map_err(|error| error.to_string())? {
+        window.hide().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    window.show().map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .setup(|_app| {
+        .setup(|app| {
             start_backend();
+
+            if let Some(window) = app.get_webview_window("main") {
+                let main_window = window.clone();
+
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+
+                        if let Err(error) = main_window.hide() {
+                            eprintln!("Failed to hide Vexa main window: {error}");
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![greet, toggle_main_window])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

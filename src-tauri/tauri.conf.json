@@ -12,9 +12,24 @@
   "app": {
     "windows": [
       {
-        "title": "vexa",
-        "width": 800,
-        "height": 600
+        "label": "launcher",
+        "title": "Vexa",
+        "width": 58,
+        "height": 58,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true
+      },
+      {
+        "label": "main",
+        "title": "Vexa",
+        "width": 460,
+        "height": 640,
+        "minWidth": 380,
+        "minHeight": 520,
+        "visible": false
       }
     ],
     "security": {
