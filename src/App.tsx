@@ -53,9 +53,7 @@ function MainApp() {
   const [dashboard, setDashboard] = useState<any>(null);
   const [dueReminder, setDueReminder] = useState<any>(null);
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
-  const [apiKeyManaged, setApiKeyManaged] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [apiKeyInput, setApiKeyInput] = useState("");
   const [settingsMessage, setSettingsMessage] = useState("");
   const isListeningRef = useRef(false);
   const continuousConversationRef = useRef(false);
@@ -123,57 +121,19 @@ function MainApp() {
       const res = await fetch(apiUrl("/settings"));
       const data = await res.json();
       const configured = Boolean(data.openai_api_key_configured);
-      const managed = Boolean(data.openai_api_key_managed);
 
       setApiKeyConfigured(configured);
-      setApiKeyManaged(managed);
-      setSettingsOpen(!configured);
+      setSettingsOpen(false);
 
       if (!configured) {
-        setReply("Add your OpenAI API key to finish setup.");
+        setReply("Vexa is not configured with the server API key yet.");
       }
     } catch (error) {
       console.error(error);
-      setSettingsOpen(true);
+      setSettingsOpen(false);
       setSettingsMessage("Backend is not running yet.");
     }
   }, []);
-
-  const saveApiKey = useCallback(async () => {
-    const apiKey = apiKeyInput.trim();
-
-    if (!apiKey) {
-      setSettingsMessage("Paste your OpenAI API key first.");
-      return;
-    }
-
-    try {
-      setSettingsMessage("Saving...");
-
-      const res = await fetch(apiUrl("/settings/openai-key"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ api_key: apiKey }),
-      });
-      const data = await res.json();
-
-      if (!data.saved) {
-        setSettingsMessage(data.error || "Could not save the key.");
-        return;
-      }
-
-      setApiKeyConfigured(true);
-      setSettingsOpen(false);
-      setApiKeyInput("");
-      setSettingsMessage("Saved.");
-      setReply("Setup is done. Tap speak or open me from the menu bar.");
-    } catch (error) {
-      console.error(error);
-      setSettingsMessage("Could not reach the backend.");
-    }
-  }, [apiKeyInput]);
 
   const checkDueReminders = useCallback(async () => {
     try {
@@ -207,8 +167,8 @@ function MainApp() {
   const startListening = useCallback(async (continuous = true) => {
     if (!apiKeyConfigured) {
       continuousConversationRef.current = false;
-      setSettingsOpen(true);
-      setReply("Add your OpenAI API key first.");
+      setSettingsOpen(false);
+      setReply("Vexa is not configured with the server API key yet.");
       return;
     }
 
@@ -289,8 +249,8 @@ function MainApp() {
 
     listen("vexa-start-listening", () => {
       if (!apiKeyConfigured) {
-        setSettingsOpen(true);
-        setReply("Add your OpenAI API key first.");
+        setSettingsOpen(false);
+        setReply("Vexa is not configured with the server API key yet.");
         return;
       }
 
@@ -365,41 +325,23 @@ function MainApp() {
           <p className="subtitle">Your macOS productivity assistant</p>
 
           {settingsOpen && (
-            <div className="setup-card">
-              {apiKeyConfigured ? (
-                <div>
-                  <strong>Connected</strong>
-                  <p>
-                    {apiKeyManaged
-                      ? "Vexa cloud is ready. Your app will use the hosted assistant."
-                      : "Your OpenAI API key is saved on this Mac."}
-                  </p>
-                  <p>Backend: {API_BASE_URL}</p>
-                </div>
-              ) : (
-                <>
-                  <div>
-                    <strong>Setup</strong>
-                    <p>Add your OpenAI API key. It stays on this Mac.</p>
-                  </div>
+            <div className="settings-card">
+              <div>
+                <strong>{apiKeyConfigured ? "Connected" : "Not configured"}</strong>
+                <p>
+                  {apiKeyConfigured
+                    ? "Vexa is using the server OpenAI API key."
+                    : "Set OPENAI_API_KEY on the backend to enable Vexa."}
+                </p>
+                <p>Backend: {API_BASE_URL}</p>
+              </div>
 
-                  <input
-                    type="password"
-                    value={apiKeyInput}
-                    onChange={(event) => setApiKeyInput(event.target.value)}
-                    placeholder="OpenAI API key"
-                  />
-
-                  <button onClick={saveApiKey}>Save key</button>
-                </>
-              )}
-
-              <p className="setup-note">
+              <p className="settings-note">
                 Also allow Microphone and Accessibility permissions when macOS asks.
               </p>
 
               {settingsMessage && (
-                <p className="setup-message">{settingsMessage}</p>
+                <p className="settings-message">{settingsMessage}</p>
               )}
             </div>
           )}

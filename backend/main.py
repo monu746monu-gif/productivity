@@ -31,7 +31,6 @@ from settings_store import (
     get_openai_api_key,
     has_openai_api_key,
     is_openai_api_key_managed,
-    save_openai_api_key,
 )
 from todos import (
     add_todo,
@@ -112,7 +111,7 @@ def get_openai_client():
 
 def missing_api_key_reply():
     return {
-        "reply": "Add your OpenAI API key in settings first, then I can listen and chat.",
+        "reply": "Vexa is not configured with the server OpenAI API key yet.",
         "missing_api_key": True,
     }
 
@@ -127,27 +126,11 @@ def get_settings():
 
 @app.post("/settings/openai-key")
 def set_openai_key(request: ApiKeyRequest):
-    if is_openai_api_key_managed():
-        return {
-            "saved": False,
-            "error": "This backend is already configured by Vexa.",
-            "openai_api_key_configured": True,
-            "openai_api_key_managed": True,
-        }
-
-    api_key = request.api_key.strip()
-
-    if not api_key:
-        return {
-            "saved": False,
-            "error": "API key is required.",
-        }
-
-    save_openai_api_key(api_key)
-
     return {
-        "saved": True,
-        "openai_api_key_configured": True,
+        "saved": False,
+        "error": "API keys are managed by the Vexa backend.",
+        "openai_api_key_configured": has_openai_api_key(),
+        "openai_api_key_managed": True,
     }
 
 
@@ -491,7 +474,7 @@ def handle_local_actions(user_text: str):
         client = get_openai_client()
 
         if client is None:
-            return "Add your OpenAI API key in settings first, then I can answer that."
+            return "Vexa is not configured with the server OpenAI API key yet."
 
         usage_text = get_today_usage_text()
         productivity_text = get_productivity_summary_text()
@@ -526,7 +509,7 @@ Do not say you do not have access to usage data.
         client = get_openai_client()
 
         if client is None:
-            return "Add your OpenAI API key in settings first, then I can make your report."
+            return "Vexa is not configured with the server OpenAI API key yet."
 
         usage_text = get_today_usage_text()
         productivity_text = get_productivity_summary_text()
