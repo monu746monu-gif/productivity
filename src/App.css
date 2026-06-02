@@ -496,3 +496,68 @@ h2 {
     display: none;
   }
 }
+
+@media (min-width: 760px) {
+  #root {
+    min-height: 100vh;
+  }
+
+  .app {
+    min-height: 100vh;
+    height: auto;
+    padding: 28px;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .glow-one {
+    left: 4%;
+    top: 18%;
+  }
+
+  .glow-two {
+    right: 6%;
+    bottom: 12%;
+  }
+
+  .shell {
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    align-items: start;
+    gap: 28px;
+    max-width: 1080px;
+    padding-right: 0;
+  }
+
+  .assistant-panel {
+    position: sticky;
+    top: 28px;
+    padding: 28px 0 0;
+  }
+
+  .dashboard-panel {
+    padding: 28px 0 0;
+  }
+
+  .stats-grid {
+    gap: 12px;
+  }
+
+  .stat-card {
+    padding: 14px;
+  }
+
+  .comparison-strip {
+    gap: 12px;
+    margin-top: 12px;
+  }
+
+  .comparison-strip div,
+  .section-block {
+    padding: 14px;
+  }
+
+  .section-block {
+    margin-top: 12px;
+  }
+}
