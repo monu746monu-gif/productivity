@@ -5,7 +5,7 @@ from tempfile import NamedTemporaryFile
 from storage import get_db_path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from pydantic import BaseModel
@@ -635,18 +635,40 @@ def voice_command():
             **missing_api_key_reply(),
         }
 
-    audio_file = record_audio(duration=VOICE_RECORD_SECONDS)
+    try:
+        audio_file = record_audio(duration=VOICE_RECORD_SECONDS)
+    except Exception as error:
+        print("VOICE_RECORDING_ERROR:", repr(error))
+        raise HTTPException(
+            status_code=503,
+            detail="Microphone recording failed. Allow microphone access for Vexa and restart the app.",
+        ) from error
 
-    with open(audio_file, "rb") as f:
-        transcription = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=f,
-            language="en",
-            prompt=VOICE_TRANSCRIPTION_PROMPT,
-        )
+    try:
+        with open(audio_file, "rb") as f:
+            transcription = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                language="en",
+                prompt=VOICE_TRANSCRIPTION_PROMPT,
+            )
+    except Exception as error:
+        print("VOICE_TRANSCRIPTION_ERROR:", repr(error))
+        raise HTTPException(
+            status_code=502,
+            detail="Vexa recorded audio but could not transcribe it. Check the OpenAI API key and network.",
+        ) from error
 
     user_text = transcription.text.strip()
-    return build_voice_reply(client, user_text)
+
+    try:
+        return build_voice_reply(client, user_text)
+    except Exception as error:
+        print("VOICE_REPLY_ERROR:", repr(error))
+        raise HTTPException(
+            status_code=502,
+            detail="Vexa heard you but could not generate a reply. Check the OpenAI API key and network.",
+        ) from error
 
 
 @app.post("/voice-command-audio")
@@ -659,25 +681,48 @@ async def voice_command_audio(file: UploadFile = File(...)):
             **missing_api_key_reply(),
         }
 
+    uploaded_audio = await file.read()
+
+    if not uploaded_audio:
+        raise HTTPException(
+            status_code=400,
+            detail="No audio was recorded. Check microphone permission and try again.",
+        )
+
     suffix = Path(file.filename or "voice.webm").suffix or ".webm"
 
     with NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
         temp_path = Path(temp_file.name)
-        temp_file.write(await file.read())
+        temp_file.write(uploaded_audio)
 
     try:
-        with temp_path.open("rb") as f:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                language="en",
-                prompt=VOICE_TRANSCRIPTION_PROMPT,
-            )
+        try:
+            with temp_path.open("rb") as f:
+                transcription = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f,
+                    language="en",
+                    prompt=VOICE_TRANSCRIPTION_PROMPT,
+                )
+        except Exception as error:
+            print("VOICE_UPLOAD_TRANSCRIPTION_ERROR:", repr(error))
+            raise HTTPException(
+                status_code=502,
+                detail="Vexa received audio but could not transcribe it. Check the OpenAI API key and network.",
+            ) from error
     finally:
         temp_path.unlink(missing_ok=True)
 
     user_text = transcription.text.strip()
-    return build_voice_reply(client, user_text)
+
+    try:
+        return build_voice_reply(client, user_text)
+    except Exception as error:
+        print("VOICE_UPLOAD_REPLY_ERROR:", repr(error))
+        raise HTTPException(
+            status_code=502,
+            detail="Vexa heard you but could not generate a reply. Check the OpenAI API key and network.",
+        ) from error
 
 
 def build_voice_reply(client, user_text: str):

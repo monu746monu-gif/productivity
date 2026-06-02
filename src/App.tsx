@@ -5,6 +5,36 @@ import "./App.css";
 
 const VOICE_RECORD_MS = 4000;
 
+type VoiceCommandResponse = {
+  transcript?: string;
+  reply?: string;
+  missing_api_key?: boolean;
+};
+
+function isTauriApp() {
+  return "__TAURI_INTERNALS__" in window;
+}
+
+async function readVoiceCommandResponse(res: Response) {
+  let data: any = {};
+
+  try {
+    data = await res.json();
+  } catch {
+    data = {};
+  }
+
+  if (!res.ok) {
+    throw new Error(data.detail || data.error || "Vexa backend could not process voice.");
+  }
+
+  if (data.missing_api_key) {
+    throw new Error("Vexa is not configured with the server API key yet.");
+  }
+
+  return data as VoiceCommandResponse;
+}
+
 async function recordVoiceClip(durationMs = VOICE_RECORD_MS) {
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     throw new Error("Audio recording is not supported on this device.");
@@ -44,6 +74,35 @@ async function recordVoiceClip(durationMs = VOICE_RECORD_MS) {
       }
     }, durationMs);
   });
+}
+
+async function sendBrowserVoiceCommand() {
+  const audio = await recordVoiceClip();
+  const formData = new FormData();
+  formData.append("file", audio, "voice.webm");
+
+  const res = await fetch(apiUrl("/voice-command-audio"), {
+    method: "POST",
+    body: formData,
+  });
+
+  return readVoiceCommandResponse(res);
+}
+
+async function sendNativeVoiceCommand() {
+  const res = await fetch(apiUrl("/voice-command"), {
+    method: "POST",
+  });
+
+  return readVoiceCommandResponse(res);
+}
+
+async function sendVoiceCommand() {
+  if (isTauriApp()) {
+    return sendNativeVoiceCommand();
+  }
+
+  return sendBrowserVoiceCommand();
 }
 
 function MainApp() {
@@ -185,16 +244,7 @@ function MainApp() {
       setStatus("Listening...");
       setReply("I'm listening.");
 
-      const audio = await recordVoiceClip();
-      const formData = new FormData();
-      formData.append("file", audio, "voice.webm");
-
-      const res = await fetch(apiUrl("/voice-command-audio"), {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await res.json();
+      const data = await sendVoiceCommand();
 
       if (runId !== listeningRunIdRef.current) {
         return;
@@ -219,7 +269,7 @@ function MainApp() {
       console.error(error);
       continuousConversationRef.current = false;
       setStatus("Error");
-      setReply("I could not record or reach Vexa. Check microphone permission and backend.");
+      setReply(error instanceof Error ? error.message : "Vexa voice command failed.");
     } finally {
       setIsListening(false);
       isListeningRef.current = false;
