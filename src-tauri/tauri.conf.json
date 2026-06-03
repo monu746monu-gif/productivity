@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "Vexa",
-        "width": 312,
-        "height": 480,
-        "minWidth": 300,
-        "minHeight": 440,
+        "width": 180,
+        "height": 180,
+        "minWidth": 180,
+        "minHeight": 180,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -35,6 +35,9 @@
     "externalBin": [
       "binaries/vexa-backend"
     ],
+    "macOS": {
+      "infoPlist": "Info.plist"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

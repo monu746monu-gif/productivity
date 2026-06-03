@@ -1,3 +1,6 @@
+from app_preferences import get_app_category_override
+
+
 PRODUCTIVE_APPS = [
     "Cursor",
     "Visual Studio Code",
@@ -32,6 +35,11 @@ NEUTRAL_APPS = [
 
 
 def classify_app(app_name: str):
+    override = get_app_category_override(app_name)
+
+    if override:
+        return override
+
     name = app_name.lower()
 
     for app in PRODUCTIVE_APPS:

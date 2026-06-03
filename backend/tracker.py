@@ -2,10 +2,15 @@ import time
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta
+from productivity import classify_app
 from storage import get_db_path
 
 TRACKER_INTERVAL_SECONDS = 5
 KEEP_HISTORY_DAYS = 14
+FOCUS_ALERT_COOLDOWN_SECONDS = 180
+VEXA_SAY_VOICE = "Samantha"
+
+last_focus_alerts = {}
 
 
 def get_active_app():
@@ -63,6 +68,33 @@ def save_app_usage(app_name):
     conn.close()
 
 
+def speak_focus_alert(app_name):
+    message = (
+        f"Monu, nooo. You marked {app_name} as distracting. "
+        "Quit this now. You have work to do. Don't you want to live a better life?"
+    )
+
+    subprocess.Popen(
+        ["say", "-v", VEXA_SAY_VOICE, message],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def maybe_alert_for_distracting_app(app_name):
+    if classify_app(app_name) != "distracting":
+        return
+
+    now = datetime.now()
+    last_alert_at = last_focus_alerts.get(app_name)
+
+    if last_alert_at and (now - last_alert_at).total_seconds() < FOCUS_ALERT_COOLDOWN_SECONDS:
+        return
+
+    last_focus_alerts[app_name] = now
+    speak_focus_alert(app_name)
+
+
 def cleanup_old_usage():
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
@@ -91,6 +123,7 @@ def start_tracker(interval=TRACKER_INTERVAL_SECONDS):
     while True:
         app_name = get_active_app()
         save_app_usage(app_name)
+        maybe_alert_for_distracting_app(app_name)
 
         print(f"Tracked: {app_name}")
 

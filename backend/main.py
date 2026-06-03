@@ -1,4 +1,5 @@
 import sqlite3
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -20,6 +21,7 @@ from intent import (
 )
 from ideas import save_idea, get_ideas_text
 from productivity import classify_app
+from app_preferences import set_app_category, get_app_preferences_text
 from recorder import record_audio
 from reminders import (
     add_reminder,
@@ -35,8 +37,12 @@ from settings_store import (
 from todos import (
     add_todo,
     get_todos_text,
+    get_pending_todos_text,
+    get_done_todos_text,
     delete_todo_by_text,
+    delete_all_todos,
     complete_todo_by_text,
+    complete_single_pending_todo,
 )
 
 load_dotenv()
@@ -58,7 +64,9 @@ app.add_middleware(
 
 TRACKER_INTERVAL_SECONDS = 5
 USAGE_HISTORY_DAYS = 14
-VOICE_RECORD_SECONDS = 4
+VOICE_RECORD_SECONDS = 10
+FOCUS_ALERT_COOLDOWN_SECONDS = 180
+FOCUS_ALERT_LOOKBACK_SECONDS = 60
 
 
 class ChatRequest(BaseModel):
@@ -74,13 +82,19 @@ pending_action = {
     "title": "",
 }
 
+conversation_memory = []
+last_focus_alerts = {}
+
 
 FRIENDLY_VOICE_STYLE = """
 Conversation style:
-- Talk like a warm, friendly assistant, not a formal report.
-- Keep normal replies to 1 or 2 short sentences.
-- Use simple words and a natural spoken rhythm.
-- If the request is unclear, ask one quick follow-up question.
+- Talk like a real person who is present with Monu, not like a formal report.
+- Keep voice replies short, warm, and natural: usually 1 to 3 sentences.
+- If Monu shares his day, mood, plans, time, or random thoughts, respond like a thoughtful friend.
+- Ask one gentle follow-up question when it would keep the conversation flowing.
+- For casual chat, do not turn the answer into productivity advice unless Monu asks for it.
+- Use simple words, natural spoken rhythm, and light Hinglish only when it fits.
+- If Monu says he wants to talk for some time, settle into conversation and invite him to continue.
 - Do not over-explain.
 - Do not use markdown, numbered lists, or long paragraphs in voice replies.
 """
@@ -182,6 +196,150 @@ def get_usage_rows():
     return get_usage_rows_for_date(today_date())
 
 
+def get_latest_usage_entry():
+    conn = sqlite3.connect(get_db_path(), timeout=1)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT app_name, timestamp
+        FROM app_usage
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    app_name, timestamp = row
+
+    try:
+        tracked_at = datetime.fromisoformat(timestamp)
+    except ValueError:
+        tracked_at = datetime.now()
+
+    return {
+        "app_name": app_name,
+        "timestamp": timestamp,
+        "tracked_at": tracked_at,
+    }
+
+
+def get_recent_usage_entries(seconds: int):
+    cutoff = datetime.now() - timedelta(seconds=seconds)
+    conn = sqlite3.connect(get_db_path(), timeout=1)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT app_name, timestamp
+        FROM app_usage
+        WHERE timestamp >= ?
+        ORDER BY timestamp DESC
+        LIMIT 30
+        """,
+        (cutoff.isoformat(),),
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    entries = []
+
+    for app_name, timestamp in rows:
+        try:
+            tracked_at = datetime.fromisoformat(timestamp)
+        except ValueError:
+            tracked_at = datetime.now()
+
+        entries.append(
+            {
+                "app_name": app_name,
+                "timestamp": timestamp,
+                "tracked_at": tracked_at,
+            }
+        )
+
+    return entries
+
+
+def get_focus_alert_for_latest_app():
+    recent_entries = get_recent_usage_entries(FOCUS_ALERT_LOOKBACK_SECONDS)
+    latest = recent_entries[0] if recent_entries else get_latest_usage_entry()
+
+    if not latest:
+        return {
+            "alert": False,
+            "app_name": "",
+            "message": "",
+            "reason": "No app usage has been tracked yet.",
+        }
+
+    distracting_entry = None
+
+    for entry in recent_entries:
+        if classify_app(entry["app_name"]) == "distracting":
+            distracting_entry = entry
+            break
+
+    if not distracting_entry and latest and classify_app(latest["app_name"]) == "distracting":
+        distracting_entry = latest
+
+    app_name = distracting_entry["app_name"] if distracting_entry else latest["app_name"]
+    category = classify_app(app_name)
+
+    if category != "distracting":
+        return {
+            "alert": False,
+            "app_name": app_name,
+            "category": category,
+            "message": "",
+            "reason": "Current app is not distracting.",
+        }
+
+    now = datetime.now()
+    seconds_since_tracking = (now - (distracting_entry or latest)["tracked_at"]).total_seconds()
+
+    if seconds_since_tracking > FOCUS_ALERT_LOOKBACK_SECONDS:
+        return {
+            "alert": False,
+            "app_name": app_name,
+            "category": category,
+            "message": "",
+            "reason": "Latest app usage is stale.",
+        }
+
+    last_alert_at = last_focus_alerts.get(app_name)
+
+    if last_alert_at and (now - last_alert_at).total_seconds() < FOCUS_ALERT_COOLDOWN_SECONDS:
+        return {
+            "alert": False,
+            "app_name": app_name,
+            "category": category,
+            "message": "",
+            "reason": "Focus alert is cooling down.",
+        }
+
+    last_focus_alerts[app_name] = now
+
+    message = (
+        f"Monu, nooo. You marked {app_name} as distracting. "
+        "Quit this now. You have work to do. Don't you want to live a better life?"
+    )
+
+    return {
+        "alert": True,
+        "app_name": app_name,
+        "category": category,
+        "message": message,
+        "cooldown_seconds": FOCUS_ALERT_COOLDOWN_SECONDS,
+    }
+
+
 def rows_to_usage_items(rows):
     usage = []
 
@@ -266,10 +424,14 @@ Distracting change: {distracting_delta} minutes
 
 
 def get_today_usage_text():
-    rows = get_usage_rows()
+    return get_usage_text_for_date(today_date())
+
+
+def get_usage_text_for_date(day):
+    rows = get_usage_rows_for_date(day)
 
     if not rows:
-        return "No app usage data has been tracked today."
+        return f"No app usage data has been tracked for {day.isoformat()}."
 
     usage_lines = []
 
@@ -329,6 +491,66 @@ def save_reminder_from_parts(title: str, reminder_time: str):
     return f"Done, Monu. I will remind you about {title} at {spoken_time}."
 
 
+def extract_app_category_preference(user_text: str):
+    text = user_text.strip()
+    lowered = text.lower()
+
+    category = None
+
+    if any(word in lowered for word in ["distracting", "disturbing", "distraction", "waste my time", "bad for me"]):
+        category = "distracting"
+    elif any(word in lowered for word in ["productive", "good for work", "work app", "focus app"]):
+        category = "productive"
+    elif "neutral" in lowered:
+        category = "neutral"
+
+    if not category:
+        return None
+
+    patterns = [
+        r"\b(.+?)\s+is\s+(?:a\s+)?(?:distracting|disturbing|productive|neutral)",
+        r"\bthis\s+app\s+(.+?)\s+is\s+(?:distracting|disturbing|productive|neutral)",
+        r"\bmark\s+(.+?)\s+as\s+(?:a\s+)?(?:distracting|disturbing|productive|neutral)",
+        r"\badd\s+(.+?)\s+as\s+(?:a\s+)?(?:distracting|disturbing|productive|neutral)",
+    ]
+
+    app_name = ""
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+
+        if match:
+            app_name = match.group(1)
+            break
+
+    if not app_name:
+        app_name = strip_command_words(
+            text,
+            [
+                "this is",
+                "this app is",
+                "is",
+                "a",
+                "an",
+                "disturbing",
+                "distracting",
+                "distraction",
+                "productive",
+                "neutral",
+                "app",
+                "for me",
+                "please",
+            ],
+        )
+
+    app_name = app_name.strip(" .,:;-")
+
+    if not app_name or app_name.lower() in {"this", "this app"}:
+        return None
+
+    return app_name, category
+
+
 def handle_pending_action(user_text: str):
     if pending_action["type"] != "add_reminder":
         return None
@@ -382,6 +604,16 @@ def handle_local_actions(user_text: str):
     if pending_reply:
         return pending_reply
 
+    app_preference = extract_app_category_preference(user_text)
+
+    if app_preference:
+        app_name, category = app_preference
+        saved_app_name = set_app_category(app_name, category)
+
+        if saved_app_name:
+            spoken_category = "distracting" if category == "distracting" else category
+            return f"Got it, Monu. I will treat {saved_app_name} as {spoken_category} from now."
+
     client = get_openai_client()
     intent_data = detect_intent(client, user_text)
 
@@ -406,27 +638,49 @@ def handle_local_actions(user_text: str):
 
     if intent == "add_todo":
         if not task:
-            return "Sure, what task should I add?"
+            return "Sure, Monu. Tell me the tasks you want on the list, one by one or in one sentence."
 
         add_todo(task)
         return f"Done, Monu. I added {task} to your list."
 
     if intent == "delete_todo":
         if not task:
-            return "Sure, which task should I remove?"
+            return "Sure, Monu. Which task should I remove?"
+
+        if task.lower() in {"__all__", "both", "all", "everything", "entire list", "my list"}:
+            deleted_titles = delete_all_todos()
+
+            if not deleted_titles:
+                return "Your todo list is already empty, Monu."
+
+            if len(deleted_titles) == 1:
+                return f"Done, Monu. I removed {deleted_titles[0]} from your todo list."
+
+            if len(deleted_titles) == 2:
+                deleted_text = " and ".join(deleted_titles)
+            else:
+                deleted_text = ", ".join(deleted_titles[:-1]) + f", and {deleted_titles[-1]}"
+
+            return f"Done, Monu. I removed both tasks: {deleted_text}." if len(deleted_titles) == 2 else f"Done, Monu. I cleared {len(deleted_titles)} tasks from your todo list: {deleted_text}."
 
         deleted_title = delete_todo_by_text(task)
 
         if deleted_title:
-            return f"Done, I removed {deleted_title}."
+            return f"Done, Monu. I removed {deleted_title} from your todo list."
 
-        return f"I could not find {task}, Monu."
+        return f"I could not find {task} in your todo list, Monu. Want me to read the current tasks?"
 
     if intent == "complete_todo":
         if not task:
             return "Sure, which task is done?"
 
-        completed_title = complete_todo_by_text(task)
+        if task.lower() in {"__current__", "this", "this task"}:
+            completed_title = complete_single_pending_todo()
+
+            if not completed_title:
+                return "I need one clear task name, Monu. Which task did you finish?"
+        else:
+            completed_title = complete_todo_by_text(task)
 
         if completed_title:
             return f"Nice, Monu. I marked {completed_title} as done."
@@ -434,8 +688,17 @@ def handle_local_actions(user_text: str):
         return f"I could not find {task}, Monu."
 
     if intent == "show_todos":
-        todos_text = get_todos_text()
-        return f"Here are your tasks, Monu. {todos_text}"
+        if task == "__pending__":
+            pending_text = get_pending_todos_text()
+            return f"Here is what is pending, Monu. {pending_text}"
+
+        if task == "__done__":
+            done_text = get_done_todos_text()
+            return f"Here is what is done, Monu. {done_text}"
+
+        pending_text = get_pending_todos_text()
+        done_text = get_done_todos_text()
+        return f"Here is your todo list, Monu. Pending: {pending_text}. Done: {done_text}."
 
     if intent == "save_idea":
         if not idea:
@@ -562,34 +825,62 @@ Do not say you do not have access to usage data, todos, ideas, or reminders.
     return None
 
 
-@app.post("/chat")
-def chat(request: ChatRequest):
-    local_reply = handle_local_actions(request.message)
+def remember_conversation(user_text: str, reply: str):
+    conversation_memory.append(
+        {
+            "user": user_text.strip(),
+            "vexa": reply.strip(),
+        }
+    )
 
-    if local_reply:
-        return {"reply": local_reply}
+    del conversation_memory[:-8]
 
-    client = get_openai_client()
 
-    if client is None:
-        return missing_api_key_reply()
+def get_conversation_memory_text():
+    if not conversation_memory:
+        return "No recent conversation yet."
 
+    lines = []
+
+    for item in conversation_memory[-8:]:
+        lines.append(f"Monu: {item['user']}")
+        lines.append(f"Vexa: {item['vexa']}")
+
+    return "\n".join(lines)
+
+
+def build_general_reply(client, user_text: str):
+    now = datetime.now()
     usage_text = get_today_usage_text()
+    yesterday_usage_text = get_usage_text_for_date(get_yesterday_date())
     productivity_text = get_productivity_summary_text()
     comparison_text = get_daily_comparison_text()
     todos_text = get_todos_text()
+    pending_todos_text = get_pending_todos_text()
+    done_todos_text = get_done_todos_text()
     ideas_text = get_ideas_text()
     reminders_text = get_reminders_text()
+    app_preferences_text = get_app_preferences_text()
+    memory_text = get_conversation_memory_text()
 
     response = client.responses.create(
         model="gpt-4.1-mini",
         instructions=f"""
-You are Vexa, a friendly AI productivity companion.
-The user's name is Monu.
+You are Vexa, Monu's voice-first AI companion.
+You can help with productivity, but you are also good at normal human conversation.
 {FRIENDLY_VOICE_STYLE}
+
+Current date and time:
+{now.strftime("%A, %B %d, %Y at %I:%M %p")}
+
+Recent conversation:
+{memory_text}
 
 Today's app usage data:
 {usage_text}
+
+Yesterday's app usage data:
+{yesterday_usage_text}
 
 Productivity summary:
 {productivity_text}
@@ -600,29 +891,55 @@ Comparison:
 Current todo list:
 {todos_text}
 
+Pending tasks:
+{pending_todos_text}
+
+Completed tasks:
+{done_todos_text}
+
 Saved ideas:
 {ideas_text}
 
 Upcoming reminders:
 {reminders_text}
 
-If the user asks about app usage, work time, productivity, Cursor, Chrome, Terminal, or focus time,
-answer using the app usage data and productivity summary.
+Custom app preferences:
+{app_preferences_text}
 
-If the user asks about yesterday or comparing today and yesterday, answer using the comparison data.
-
-If the user asks about todos or tasks, answer using the current todo list.
-
-If the user asks about saved ideas, answer using saved ideas.
-
-If the user asks about reminders, calls, meetings, or scheduled things, answer using upcoming reminders.
-
-Do not say you do not have access to usage data, todos, ideas, or reminders.
+Behavior:
+- If Monu is casually talking, respond conversationally and emotionally aware.
+- If Monu talks about his day, ask or say something that naturally continues the conversation.
+- If Monu asks what he did today or how he spent time, use tracked app usage and ask about the human side of his day.
+- If Monu says he wants to talk for a while, say yes warmly and invite him to tell you what's on his mind.
+- If Monu asks about app usage, distraction, productivity, todos, pending tasks, completed tasks, ideas, or reminders, use the data above.
+- If Monu asks about yesterday, use the comparison data and yesterday values.
+- If Monu asks for a report, summarize today or yesterday clearly with productive time, distracting time, top apps, tasks, and reminders.
+- Do not mention internal data unless it is relevant to what Monu asked.
+- Do not say you cannot have a normal conversation.
+- Sound like one intelligent, friendly person speaking, not a command parser.
 """,
-        input=request.message,
+        input=user_text,
     )
 
-    return {"reply": response.output_text}
+    reply = response.output_text.strip()
+    remember_conversation(user_text, reply)
+    return reply
+
+
+@app.post("/chat")
+def chat(request: ChatRequest):
+    local_reply = handle_local_actions(request.message)
+
+    if local_reply:
+        remember_conversation(request.message, local_reply)
+        return {"reply": local_reply}
+
+    client = get_openai_client()
+
+    if client is None:
+        return missing_api_key_reply()
+
+    return {"reply": build_general_reply(client, request.message)}
 
 
 @app.post("/voice-command")
@@ -737,70 +1054,17 @@ def build_voice_reply(client, user_text: str):
     local_reply = handle_local_actions(user_text)
 
     if local_reply:
+        remember_conversation(user_text, local_reply)
         return {
             "transcript": user_text,
             "reply": local_reply,
         }
 
-    usage_text = get_today_usage_text()
-    productivity_text = get_productivity_summary_text()
-    comparison_text = get_daily_comparison_text()
-    todos_text = get_todos_text()
-    ideas_text = get_ideas_text()
-    reminders_text = get_reminders_text()
-
-    print("USAGE:", usage_text)
-    print("PRODUCTIVITY:", productivity_text)
-    print("TODOS:", todos_text)
-    print("IDEAS:", ideas_text)
-    print("REMINDERS:", reminders_text)
-
-    response = client.responses.create(
-        model="gpt-4.1-mini",
-        instructions=f"""
-You are Vexa, a friendly voice-first AI productivity companion.
-The user's name is Monu.
-{FRIENDLY_VOICE_STYLE}
-
-Today's app usage data:
-{usage_text}
-
-Productivity summary:
-{productivity_text}
-
-Comparison:
-{comparison_text}
-
-Current todo list:
-{todos_text}
-
-Saved ideas:
-{ideas_text}
-
-Upcoming reminders:
-{reminders_text}
-
-If the user asks about Cursor, Chrome, Terminal, productivity time, work time, focus time, or app usage,
-answer directly using the app usage data and productivity summary.
-
-If the user asks about yesterday or comparing today and yesterday, answer using the comparison data.
-
-If the user asks about todos or tasks, answer using the current todo list.
-
-If the user asks about saved ideas, answer using saved ideas.
-
-If the user asks about reminders, calls, meetings, or scheduled things, answer using upcoming reminders.
-
-If the user asks for a daily report, summarize productivity, top apps, pending tasks, saved ideas, reminders, and one improvement suggestion.
-
-Do not say you do not have access to usage data, todos, ideas, or reminders.
-""",
-        input=user_text,
-    )
+    reply = build_general_reply(client, user_text)
 
     return {
         "transcript": user_text,
-        "reply": response.output_text,
+        "reply": reply,
     }
 
 
@@ -831,6 +1095,15 @@ def productivity_summary():
 
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/focus-alert")
+def focus_alert():
+    try:
+        return get_focus_alert_for_latest_app()
+
+    except Exception as e:
+        return {"alert": False, "error": str(e)}
 
 
 @app.get("/usage-comparison")

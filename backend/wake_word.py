@@ -274,7 +274,7 @@ def listen_for_wake_word():
 
 
 def listen_for_command():
-    speak("Hey Monu, I am listening.")
+    speak("Hey Monu, what's going on?")
     print("Listening for command...")
 
     audio_file = record_audio(filename="command.wav", duration=8)

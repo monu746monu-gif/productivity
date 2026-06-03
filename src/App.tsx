@@ -1,9 +1,10 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE_URL, apiUrl } from "./api";
+import { apiUrl } from "./api";
+import assistantAvatar from "./assets/vexa-assistant-avatar.png";
 import "./App.css";
 
-const VOICE_RECORD_MS = 4000;
+const VOICE_RECORD_MS = 10000;
 
 type VoiceCommandResponse = {
   transcript?: string;
@@ -13,6 +14,22 @@ type VoiceCommandResponse = {
 
 function isTauriApp() {
   return "__TAURI_INTERNALS__" in window;
+}
+
+function microphoneErrorMessage(error: unknown) {
+  if (error instanceof DOMException) {
+    if (error.name === "NotAllowedError" || error.name === "SecurityError") {
+      return isTauriApp()
+        ? "Microphone access is blocked. Open System Settings > Privacy & Security > Microphone, allow Vexa, then restart Vexa."
+        : "Microphone access is blocked. Allow microphone access in your browser and try again.";
+    }
+
+    if (error.name === "NotFoundError") {
+      return "No microphone was found. Connect a microphone and try again.";
+    }
+  }
+
+  return "Microphone recording failed. Allow microphone access for Vexa and restart the app.";
 }
 
 async function readVoiceCommandResponse(res: Response) {
@@ -40,7 +57,14 @@ async function recordVoiceClip(durationMs = VOICE_RECORD_MS) {
     throw new Error("Audio recording is not supported on this device.");
   }
 
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  let stream: MediaStream;
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    throw new Error(microphoneErrorMessage(error));
+  }
+
   const chunks: BlobPart[] = [];
   const mimeType = MediaRecorder.isTypeSupported("audio/webm")
     ? "audio/webm"
@@ -98,25 +122,30 @@ async function sendNativeVoiceCommand() {
 }
 
 async function sendVoiceCommand() {
-  if (isTauriApp()) {
-    return sendNativeVoiceCommand();
-  }
+  try {
+    return await sendBrowserVoiceCommand();
+  } catch (error) {
+    if (!isTauriApp()) {
+      throw error;
+    }
 
-  return sendBrowserVoiceCommand();
+    if (error instanceof Error && error.message.includes("Audio recording is not supported")) {
+      return sendNativeVoiceCommand();
+    }
+
+    throw error;
+  }
 }
 
 function MainApp() {
   const [status, setStatus] = useState("Sleeping...");
   const [reply, setReply] = useState("Say Hey Vexa, or tap the voice button.");
-  const [isListening, setIsListening] = useState(false);
-  const [dashboard, setDashboard] = useState<any>(null);
-  const [dueReminder, setDueReminder] = useState<any>(null);
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsMessage, setSettingsMessage] = useState("");
+  const [isWindowOpening, setIsWindowOpening] = useState(true);
   const isListeningRef = useRef(false);
   const continuousConversationRef = useRef(false);
   const listeningRunIdRef = useRef(0);
+  const openAnimationTimeoutRef = useRef<number | null>(null);
   const startListeningRef = useRef<(continuous?: boolean) => void>(() => {});
 
   const speak = useCallback((text: string) => {
@@ -158,8 +187,7 @@ function MainApp() {
       }
 
       const res = await fetch(apiUrl("/dashboard"));
-      const data = await res.json();
-      setDashboard(data);
+      await res.json();
 
       if (showStatus) {
         setStatus("Sleeping...");
@@ -182,15 +210,14 @@ function MainApp() {
       const configured = Boolean(data.openai_api_key_configured);
 
       setApiKeyConfigured(configured);
-      setSettingsOpen(false);
 
       if (!configured) {
-        setReply("Vexa is not configured with the server API key yet.");
+        const message = "Vexa is not configured with the server API key yet.";
+        setReply(message);
       }
     } catch (error) {
       console.error(error);
-      setSettingsOpen(false);
-      setSettingsMessage("Backend is not running yet.");
+      setReply("Backend is not running yet.");
     }
   }, []);
 
@@ -210,10 +237,6 @@ function MainApp() {
           ? `Reminder, Monu: ${title}`
           : `Reminders, Monu: ${title}`;
 
-      setDueReminder({
-        title,
-        display_time: reminders[0].display_time,
-      });
       setStatus("Reminder");
       setReply(reminderText);
       speak(reminderText);
@@ -223,11 +246,32 @@ function MainApp() {
     }
   }, [loadDashboard, speak]);
 
+  const checkFocusAlert = useCallback(async () => {
+    if (isListeningRef.current) {
+      return;
+    }
+
+    try {
+      const res = await fetch(apiUrl("/focus-alert"));
+      const data = await res.json();
+
+      if (!data.alert || !data.message) {
+        return;
+      }
+
+      setStatus("Speaking...");
+      setReply(data.message);
+      speak(data.message);
+    } catch (error) {
+      console.error(error);
+    }
+  }, [speak]);
+
   const startListening = useCallback(async (continuous = true) => {
     if (!apiKeyConfigured) {
       continuousConversationRef.current = false;
-      setSettingsOpen(false);
-      setReply("Vexa is not configured with the server API key yet.");
+      const message = "Vexa is not configured with the server API key yet.";
+      setReply(message);
       return;
     }
 
@@ -240,9 +284,8 @@ function MainApp() {
       isListeningRef.current = true;
       const runId = listeningRunIdRef.current + 1;
       listeningRunIdRef.current = runId;
-      setIsListening(true);
       setStatus("Listening...");
-      setReply("I'm listening.");
+      setReply("I'm listening. Take your time.");
 
       const data = await sendVoiceCommand();
 
@@ -250,7 +293,8 @@ function MainApp() {
         return;
       }
 
-      const transcript = String(data.transcript || "").toLowerCase();
+      const rawTranscript = String(data.transcript || "").trim();
+      const transcript = rawTranscript.toLowerCase();
       const shouldStop =
         transcript.includes("stop listening") ||
         transcript.includes("stop conversation") ||
@@ -261,17 +305,21 @@ function MainApp() {
         continuousConversationRef.current = false;
       }
 
+      const vexaReply = shouldStop
+        ? "Okay Monu, I will stop listening."
+        : data.reply || "Done.";
+
       setStatus("Speaking...");
-      setReply(shouldStop ? "Okay Monu, I will stop listening." : data.reply || "Done.");
-      speak(shouldStop ? "Okay Monu, I will stop listening." : data.reply || "Done.");
+      setReply(vexaReply);
+      speak(vexaReply);
       loadDashboard();
     } catch (error) {
       console.error(error);
       continuousConversationRef.current = false;
       setStatus("Error");
-      setReply(error instanceof Error ? error.message : "Vexa voice command failed.");
+      const message = error instanceof Error ? error.message : "Vexa voice command failed.";
+      setReply(message);
     } finally {
-      setIsListening(false);
       isListeningRef.current = false;
     }
   }, [apiKeyConfigured, loadDashboard, speak]);
@@ -281,26 +329,53 @@ function MainApp() {
   }, [startListening]);
 
   useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setIsWindowOpening(false);
+    }, 720);
+
+    return () => window.clearTimeout(timeoutId);
+  }, []);
+
+  useEffect(() => {
     loadSettings();
     loadDashboard();
     checkDueReminders();
+    checkFocusAlert();
 
     const interval = setInterval(() => {
       loadDashboard();
       checkDueReminders();
-    }, 10000);
+      checkFocusAlert();
+    }, 20000);
 
     return () => clearInterval(interval);
-  }, [checkDueReminders, loadDashboard, loadSettings]);
+  }, [checkDueReminders, checkFocusAlert, loadDashboard, loadSettings]);
 
   useEffect(() => {
     let unlistenStart: (() => void) | undefined;
     let unlistenStop: (() => void) | undefined;
 
+    const playOpenAnimation = () => {
+      if (openAnimationTimeoutRef.current) {
+        window.clearTimeout(openAnimationTimeoutRef.current);
+      }
+
+      setIsWindowOpening(false);
+      window.requestAnimationFrame(() => {
+        setIsWindowOpening(true);
+        openAnimationTimeoutRef.current = window.setTimeout(() => {
+          setIsWindowOpening(false);
+          openAnimationTimeoutRef.current = null;
+        }, 720);
+      });
+    };
+
     listen("vexa-start-listening", () => {
+      playOpenAnimation();
+
       if (!apiKeyConfigured) {
-        setSettingsOpen(false);
-        setReply("Vexa is not configured with the server API key yet.");
+        const message = "Vexa is not configured with the server API key yet.";
+        setReply(message);
         return;
       }
 
@@ -308,10 +383,11 @@ function MainApp() {
         return;
       }
 
+      const greeting = "Hey Monu, what's going on?";
       continuousConversationRef.current = true;
       setStatus("Speaking...");
-      setReply("Hey, what's up?");
-      speak("Hey, what's up?");
+      setReply(greeting);
+      speak(greeting);
     }).then((cleanup) => {
       unlistenStart = cleanup;
     });
@@ -320,7 +396,6 @@ function MainApp() {
       continuousConversationRef.current = false;
       listeningRunIdRef.current += 1;
       window.speechSynthesis.cancel();
-      setIsListening(false);
       isListeningRef.current = false;
       setStatus("Sleeping...");
       setReply("Sleeping...");
@@ -331,6 +406,10 @@ function MainApp() {
     return () => {
       unlistenStart?.();
       unlistenStop?.();
+
+      if (openAnimationTimeoutRef.current) {
+        window.clearTimeout(openAnimationTimeoutRef.current);
+      }
     };
   }, [apiKeyConfigured, speak]);
 
@@ -344,160 +423,15 @@ function MainApp() {
       : "orb";
 
   return (
-    <main className="app">
-      <div className="background-glow glow-one" />
-      <div className="background-glow glow-two" />
-
-      {dueReminder && (
-        <div className="reminder-popup" role="alert">
-          <div>
-            <span>Reminder</span>
-            <strong>{dueReminder.title}</strong>
-            <p>{dueReminder.display_time}</p>
-          </div>
-
-          <button onClick={() => setDueReminder(null)}>Dismiss</button>
-        </div>
-      )}
-
+    <main className={isWindowOpening ? "app opening" : "app"} aria-label={reply}>
       <section className="shell">
         <div className="assistant-panel">
-          <div className="top-pill">
-            <span className="pulse-dot" />
-            Voice-first AI companion
-          </div>
-
           <div className={orbClass}>
-            <div className="orb-inner">V</div>
-          </div>
-
-          <h1>Vexa</h1>
-          <p className="subtitle">Your macOS productivity assistant</p>
-
-          {settingsOpen && (
-            <div className="settings-card">
-              <div>
-                <strong>{apiKeyConfigured ? "Connected" : "Not configured"}</strong>
-                <p>
-                  {apiKeyConfigured
-                    ? "Vexa is using the server OpenAI API key."
-                    : "Set OPENAI_API_KEY on the backend to enable Vexa."}
-                </p>
-                <p>Backend: {API_BASE_URL}</p>
-              </div>
-
-              <p className="settings-note">
-                Also allow Microphone and Accessibility permissions when macOS asks.
-              </p>
-
-              {settingsMessage && (
-                <p className="settings-message">{settingsMessage}</p>
-              )}
-            </div>
-          )}
-
-          <p className="reply-text">{reply}</p>
-
-          <button
-            className="primary-btn"
-            disabled={!apiKeyConfigured}
-            onClick={() => startListening(true)}
-          >
-            {isListening ? "Listening..." : "Speak to Vexa"}
-          </button>
-
-          <button
-            className="secondary-btn"
-            onClick={() => setSettingsOpen((open) => !open)}
-          >
-            Settings
-          </button>
-
-          <button className="secondary-btn" onClick={() => loadDashboard(true)}>
-            Refresh dashboard
-          </button>
-        </div>
-
-        <div className="dashboard-panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Live summary</p>
-              <h2>Productivity Dashboard</h2>
-            </div>
-            <span className="window-pill">
-              {dashboard?.window?.replaceAll("_", " ") || "today"}
-            </span>
-          </div>
-
-          <div className="stats-grid">
-            <div className="stat-card">
-              <span>Productive</span>
-              <strong>{dashboard?.totals?.productive ?? 0} min</strong>
-            </div>
-
-            <div className="stat-card">
-              <span>Neutral</span>
-              <strong>{dashboard?.totals?.neutral ?? 0} min</strong>
-            </div>
-
-            <div className="stat-card danger">
-              <span>Distracting</span>
-              <strong>{dashboard?.totals?.distracting ?? 0} min</strong>
-            </div>
-          </div>
-
-          <div className="comparison-strip">
-            <div>
-              <span>Yesterday productive</span>
-              <strong>{dashboard?.yesterday_totals?.productive ?? 0} min</strong>
-            </div>
-
-            <div>
-              <span>Today vs yesterday</span>
-              <strong>
-                {(dashboard?.comparison?.productive_delta ?? 0) >= 0 ? "+" : ""}
-                {dashboard?.comparison?.productive_delta ?? 0} min
-              </strong>
-            </div>
-          </div>
-
-          <div className="section-block">
-            <h3>Top Apps Today</h3>
-
-            {dashboard?.top_apps_today?.length ? (
-              dashboard.top_apps_today.map((app: any) => (
-                <div className="app-row" key={app.app_name}>
-                  <div>
-                    <strong>{app.app_name}</strong>
-                    <span>{app.category}</span>
-                  </div>
-                  <p>{app.minutes} min</p>
-                </div>
-              ))
-            ) : (
-              <p className="empty-text">No usage data yet.</p>
-            )}
-          </div>
-
-          <div className="section-block">
-            <h3>Todos</h3>
-            <p className="todo-preview">
-              {dashboard?.todos || "No todos yet."}
-            </p>
-          </div>
-
-          <div className="section-block">
-            <h3>Ideas</h3>
-            <p className="todo-preview">
-              {dashboard?.ideas || "No ideas saved yet."}
-            </p>
-          </div>
-
-          <div className="section-block">
-            <h3>Reminders</h3>
-            <p className="todo-preview">
-              {dashboard?.reminders || "No upcoming reminders."}
-            </p>
+            <img
+              className="orb-avatar"
+              src={assistantAvatar}
+              alt="Vexa assistant"
+            />
           </div>
         </div>
       </section>

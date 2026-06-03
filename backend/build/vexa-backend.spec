@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['../sidecar_main.py'],
+    ['/Users/monupoonia/alexaa/vexa/backend/sidecar_main.py'],
     pathex=[],
     binaries=[],
     datas=[],

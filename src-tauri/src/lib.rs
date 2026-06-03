@@ -36,15 +36,7 @@ fn start_local_backend_fallback() {
     }
 
     if let Err(error) = std::process::Command::new(python)
-        .args([
-            "-m",
-            "uvicorn",
-            "main:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8000",
-        ])
+        .arg("sidecar_main.py")
         .current_dir(backend_dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
