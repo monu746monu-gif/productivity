@@ -8,14 +8,39 @@ from tempfile import gettempdir
 def record_audio(filename="command.wav", duration=4, sample_rate=16000):
     print("Recording... speak clearly now.")
 
-    audio = sd.rec(
-        int(duration * sample_rate),
+    chunk_seconds = 0.1
+    chunk_size = int(sample_rate * chunk_seconds)
+    min_duration = min(1.8, duration)
+    silence_duration = 0.9
+    speech_threshold = 0.018
+    chunks = []
+    heard_speech = False
+    silent_for = 0.0
+    recorded_for = 0.0
+
+    with sd.InputStream(
         samplerate=sample_rate,
         channels=1,
         dtype="float32",
-    )
+        blocksize=chunk_size,
+    ) as stream:
+        while recorded_for < duration:
+            chunk, _overflowed = stream.read(chunk_size)
+            chunks.append(chunk.copy())
+            recorded_for += chunk_seconds
 
-    sd.wait()
+            volume = float(np.sqrt(np.mean(np.square(chunk))))
+
+            if volume > speech_threshold:
+                heard_speech = True
+                silent_for = 0.0
+            elif heard_speech and recorded_for >= min_duration:
+                silent_for += chunk_seconds
+
+                if silent_for >= silence_duration:
+                    break
+
+    audio = np.concatenate(chunks) if chunks else np.zeros((1, 1), dtype="float32")
 
     # Normalize volume so Whisper gets louder/clearer audio
     max_value = np.max(np.abs(audio))

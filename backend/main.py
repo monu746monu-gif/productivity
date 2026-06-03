@@ -480,6 +480,93 @@ App breakdown:
 """
 
 
+def format_duration_minutes(minutes: float):
+    minutes = round(minutes, 2)
+
+    if minutes < 1:
+        seconds = round(minutes * 60)
+        return f"{seconds} seconds"
+
+    hours = int(minutes // 60)
+    remaining = round(minutes % 60)
+
+    if hours <= 0:
+        minute_label = "minute" if minutes == 1 else "minutes"
+        return f"{minutes:g} {minute_label}"
+
+    hour_label = "hour" if hours == 1 else "hours"
+
+    if remaining == 0:
+        return f"{hours} {hour_label}"
+
+    minute_label = "minute" if remaining == 1 else "minutes"
+    return f"{hours} {hour_label} {remaining} {minute_label}"
+
+
+def get_usage_category_answer(user_text: str):
+    text = user_text.lower()
+
+    if not any(
+        phrase in text
+        for phrase in [
+            "how much",
+            "how many",
+            "tell me",
+            "what is",
+            "what's",
+            "spent",
+            "spend",
+            "usage",
+            "time",
+        ]
+    ):
+        return None
+
+    category = None
+
+    if any(word in text for word in ["productive", "productivity", "focus", "focused", "work"]):
+        category = "productive"
+    elif any(word in text for word in ["distracting", "distraction", "wasted", "waste"]):
+        category = "distracting"
+    elif "neutral" in text:
+        category = "neutral"
+    elif any(phrase in text for phrase in ["total time", "all time", "overall time"]):
+        category = "total"
+
+    if not category:
+        return None
+
+    comparison = get_daily_comparison()
+    today = comparison["today"]
+
+    if category == "total":
+        total_minutes = round(
+            today["productive"] + today["neutral"] + today["distracting"],
+            2,
+        )
+        return f"Monu, I have tracked {format_duration_minutes(total_minutes)} total today."
+
+    category_minutes = today[category]
+    category_label = "productive work" if category == "productive" else f"{category} apps"
+    reply = f"Monu, you have spent {format_duration_minutes(category_minutes)} on {category_label} today."
+
+    if category == "productive":
+        productive_apps = [
+            item
+            for item in rows_to_usage_items(get_usage_rows())
+            if item["category"] == "productive"
+        ]
+
+        if productive_apps:
+            top_apps = ", ".join(
+                f'{item["app_name"]} {format_duration_minutes(item["minutes"])}'
+                for item in productive_apps[:3]
+            )
+            reply += f" Top productive apps: {top_apps}."
+
+    return reply
+
+
 def save_reminder_from_parts(title: str, reminder_time: str):
     remind_at = parse_reminder_time(reminder_time)
 
@@ -603,6 +690,11 @@ def handle_local_actions(user_text: str):
 
     if pending_reply:
         return pending_reply
+
+    usage_category_answer = get_usage_category_answer(user_text)
+
+    if usage_category_answer:
+        return usage_category_answer
 
     app_preference = extract_app_category_preference(user_text)
 

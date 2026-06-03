@@ -5,6 +5,9 @@ import assistantAvatar from "./assets/vexa-assistant-avatar.png";
 import "./App.css";
 
 const VOICE_RECORD_MS = 10000;
+const MIN_VOICE_RECORD_MS = 1800;
+const SILENCE_STOP_MS = 900;
+const SPEECH_LEVEL_THRESHOLD = 0.018;
 
 type VoiceCommandResponse = {
   transcript?: string;
@@ -73,8 +76,78 @@ async function recordVoiceClip(durationMs = VOICE_RECORD_MS) {
     stream,
     mimeType ? { mimeType } : undefined,
   );
+  const AudioContextConstructor =
+    window.AudioContext || (window as any).webkitAudioContext;
+  const audioContext = AudioContextConstructor
+    ? new AudioContextConstructor()
+    : null;
+  const analyser = audioContext?.createAnalyser();
+  const source = audioContext ? audioContext.createMediaStreamSource(stream) : null;
+  const audioLevels = analyser ? new Uint8Array(analyser.fftSize) : null;
+
+  if (analyser && source) {
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+  }
 
   return new Promise<Blob>((resolve, reject) => {
+    let stopTimeoutId: number | null = null;
+    let monitorFrameId: number | null = null;
+    let startedAt = 0;
+    let heardSpeech = false;
+    let silenceStartedAt: number | null = null;
+
+    const cleanup = () => {
+      if (stopTimeoutId) {
+        window.clearTimeout(stopTimeoutId);
+      }
+
+      if (monitorFrameId) {
+        window.cancelAnimationFrame(monitorFrameId);
+      }
+
+      audioContext?.close().catch(() => {});
+      stream.getTracks().forEach((track) => track.stop());
+    };
+
+    const stopRecording = () => {
+      if (recorder.state !== "inactive") {
+        recorder.stop();
+      }
+    };
+
+    const monitorSpeech = () => {
+      if (!analyser || !audioLevels || recorder.state === "inactive") {
+        return;
+      }
+
+      analyser.getByteTimeDomainData(audioLevels);
+
+      let total = 0;
+
+      for (const level of audioLevels) {
+        const normalized = (level - 128) / 128;
+        total += normalized * normalized;
+      }
+
+      const volume = Math.sqrt(total / audioLevels.length);
+      const now = performance.now();
+
+      if (volume > SPEECH_LEVEL_THRESHOLD) {
+        heardSpeech = true;
+        silenceStartedAt = null;
+      } else if (heardSpeech && now - startedAt > MIN_VOICE_RECORD_MS) {
+        silenceStartedAt ??= now;
+
+        if (now - silenceStartedAt > SILENCE_STOP_MS) {
+          stopRecording();
+          return;
+        }
+      }
+
+      monitorFrameId = window.requestAnimationFrame(monitorSpeech);
+    };
+
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
         chunks.push(event.data);
@@ -82,21 +155,19 @@ async function recordVoiceClip(durationMs = VOICE_RECORD_MS) {
     };
 
     recorder.onerror = () => {
-      stream.getTracks().forEach((track) => track.stop());
+      cleanup();
       reject(new Error("Could not record audio."));
     };
 
     recorder.onstop = () => {
-      stream.getTracks().forEach((track) => track.stop());
+      cleanup();
       resolve(new Blob(chunks, { type: mimeType || "audio/webm" }));
     };
 
     recorder.start();
-    window.setTimeout(() => {
-      if (recorder.state !== "inactive") {
-        recorder.stop();
-      }
-    }, durationMs);
+    startedAt = performance.now();
+    stopTimeoutId = window.setTimeout(stopRecording, durationMs);
+    monitorSpeech();
   });
 }
 
@@ -140,16 +211,19 @@ async function sendVoiceCommand() {
 function MainApp() {
   const [status, setStatus] = useState("Sleeping...");
   const [reply, setReply] = useState("Say Hey Vexa, or tap the voice button.");
-  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
   const [isWindowOpening, setIsWindowOpening] = useState(true);
   const isListeningRef = useRef(false);
   const continuousConversationRef = useRef(false);
+  const apiKeyConfiguredRef = useRef(false);
+  const settingsLoadedRef = useRef(false);
   const listeningRunIdRef = useRef(0);
   const openAnimationTimeoutRef = useRef<number | null>(null);
   const startListeningRef = useRef<(continuous?: boolean) => void>(() => {});
 
   const speak = useCallback((text: string) => {
     const utterance = new SpeechSynthesisUtterance(text);
+    let fallbackTimeoutId: number | null = null;
+    let finished = false;
 
     const voices = window.speechSynthesis.getVoices();
 
@@ -166,10 +240,17 @@ function MainApp() {
     utterance.pitch = 1.04;
     utterance.volume = 1;
 
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
+    const finishSpeaking = () => {
+      if (finished) {
+        return;
+      }
 
-    utterance.onend = () => {
+      finished = true;
+
+      if (fallbackTimeoutId) {
+        window.clearTimeout(fallbackTimeoutId);
+      }
+
       setStatus("Sleeping...");
 
       if (continuousConversationRef.current) {
@@ -178,6 +259,17 @@ function MainApp() {
         }, 350);
       }
     };
+
+    utterance.onend = finishSpeaking;
+    utterance.onerror = finishSpeaking;
+
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+
+    fallbackTimeoutId = window.setTimeout(
+      finishSpeaking,
+      Math.max(1400, text.length * 85),
+    );
   }, []);
 
   const loadDashboard = useCallback(async (showStatus = false) => {
@@ -209,15 +301,21 @@ function MainApp() {
       const data = await res.json();
       const configured = Boolean(data.openai_api_key_configured);
 
-      setApiKeyConfigured(configured);
+      settingsLoadedRef.current = true;
+      apiKeyConfiguredRef.current = configured;
 
       if (!configured) {
         const message = "Vexa is not configured with the server API key yet.";
         setReply(message);
       }
+
+      return configured;
     } catch (error) {
       console.error(error);
+      settingsLoadedRef.current = true;
+      apiKeyConfiguredRef.current = false;
       setReply("Backend is not running yet.");
+      return false;
     }
   }, []);
 
@@ -268,7 +366,11 @@ function MainApp() {
   }, [speak]);
 
   const startListening = useCallback(async (continuous = true) => {
-    if (!apiKeyConfigured) {
+    const configured = settingsLoadedRef.current
+      ? apiKeyConfiguredRef.current
+      : await loadSettings();
+
+    if (!configured) {
       continuousConversationRef.current = false;
       const message = "Vexa is not configured with the server API key yet.";
       setReply(message);
@@ -322,7 +424,7 @@ function MainApp() {
     } finally {
       isListeningRef.current = false;
     }
-  }, [apiKeyConfigured, loadDashboard, speak]);
+  }, [loadDashboard, loadSettings, speak]);
 
   useEffect(() => {
     startListeningRef.current = startListening;
@@ -370,10 +472,14 @@ function MainApp() {
       });
     };
 
-    listen("vexa-start-listening", () => {
+    listen("vexa-start-listening", async () => {
       playOpenAnimation();
 
-      if (!apiKeyConfigured) {
+      const configured = settingsLoadedRef.current
+        ? apiKeyConfiguredRef.current
+        : await loadSettings();
+
+      if (!configured) {
         const message = "Vexa is not configured with the server API key yet.";
         setReply(message);
         return;
@@ -411,7 +517,7 @@ function MainApp() {
         window.clearTimeout(openAnimationTimeoutRef.current);
       }
     };
-  }, [apiKeyConfigured, speak]);
+  }, [loadSettings, speak]);
 
   const orbClass =
     status === "Listening..."

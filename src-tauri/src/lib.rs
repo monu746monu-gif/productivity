@@ -47,6 +47,32 @@ fn start_local_backend_fallback() {
     }
 }
 
+fn start_bundled_backend_fallback() -> bool {
+    let Some(sidecar_path) = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.join("vexa-backend")))
+    else {
+        return false;
+    };
+
+    if !sidecar_path.is_file() {
+        return false;
+    }
+
+    match std::process::Command::new(sidecar_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => true,
+        Err(error) => {
+            eprintln!("Failed to start bundled Vexa backend fallback: {error}");
+            false
+        }
+    }
+}
+
 fn start_backend(app: &tauri::AppHandle) {
     if TcpStream::connect("127.0.0.1:8000").is_ok() {
         return;
@@ -86,12 +112,16 @@ fn start_backend(app: &tauri::AppHandle) {
             }
             Err(error) => {
                 eprintln!("Failed to spawn Vexa sidecar backend: {error}");
-                start_local_backend_fallback();
+                if !start_bundled_backend_fallback() {
+                    start_local_backend_fallback();
+                }
             }
         },
         Err(error) => {
             eprintln!("Failed to prepare Vexa sidecar backend: {error}");
-            start_local_backend_fallback();
+            if !start_bundled_backend_fallback() {
+                start_local_backend_fallback();
+            }
         }
     }
 }
