@@ -14,12 +14,15 @@ from pydantic import BaseModel
 from intent import (
     TIME_PATTERN,
     detect_intent,
+    has_idea_discussion_language,
     has_idea_language,
     has_reminder_language,
     has_todo_language,
     strip_command_words,
 )
 from ideas import save_idea, get_ideas_text
+from done_work import save_done_work, get_done_work_titles, get_done_work_text
+from social_posts import save_social_post, get_latest_social_post
 from productivity import classify_app
 from app_preferences import set_app_category, get_app_preferences_text
 from recorder import record_audio
@@ -80,6 +83,7 @@ class ApiKeyRequest(BaseModel):
 pending_action = {
     "type": "",
     "title": "",
+    "platform": "",
 }
 
 conversation_memory = []
@@ -88,13 +92,13 @@ last_focus_alerts = {}
 
 FRIENDLY_VOICE_STYLE = """
 Conversation style:
-- Talk like a real person who is present with Monu, not like a formal report.
+- Talk like a real person who is present with Misu, not like a formal report.
 - Keep voice replies short, warm, and natural: usually 1 to 3 sentences.
-- If Monu shares his day, mood, plans, time, or random thoughts, respond like a thoughtful friend.
+- If Misu shares his day, mood, plans, time, or random thoughts, respond like a thoughtful friend.
 - Ask one gentle follow-up question when it would keep the conversation flowing.
-- For casual chat, do not turn the answer into productivity advice unless Monu asks for it.
+- For casual chat, do not turn the answer into productivity advice unless Misu asks for it.
 - Use simple words, natural spoken rhythm, and light Hinglish only when it fits.
-- If Monu says he wants to talk for some time, settle into conversation and invite him to continue.
+- If Misu says he wants to talk for some time, settle into conversation and invite him to continue.
 - Do not over-explain.
 - Do not use markdown, numbered lists, or long paragraphs in voice replies.
 """
@@ -104,8 +108,9 @@ VOICE_TRANSCRIPTION_PROMPT = (
     "The user is speaking English or Hinglish to an AI productivity "
     "assistant named Vexa. Terms may include Cursor, Chrome, Terminal, "
     "productivity, todo, checklist, app usage, work time, delete task, "
-    "remove task, mark task done, daily report, productivity summary, "
-    "save idea, remember idea, meeting, call, and reminder."
+    "remove task, mark task done, pending tasks, completed tasks, "
+    "daily report, productivity summary, how was my day, save idea, "
+    "remember idea, meeting, call, and reminder."
 )
 
 
@@ -327,7 +332,7 @@ def get_focus_alert_for_latest_app():
     last_focus_alerts[app_name] = now
 
     message = (
-        f"Monu, nooo. You marked {app_name} as distracting. "
+        f"Misu, nooo. You marked {app_name} as distracting. "
         "Quit this now. You have work to do. Don't you want to live a better life?"
     )
 
@@ -503,6 +508,126 @@ def format_duration_minutes(minutes: float):
     return f"{hours} {hour_label} {remaining} {minute_label}"
 
 
+def get_top_usage_items(limit=3, category=None):
+    items = rows_to_usage_items(get_usage_rows())
+
+    if category:
+        items = [item for item in items if item["category"] == category]
+
+    return items[:limit]
+
+
+def format_top_apps_for_voice(items):
+    if not items:
+        return ""
+
+    return ", ".join(
+        f'{item["app_name"]} for {format_duration_minutes(item["minutes"])}'
+        for item in items
+    )
+
+
+def detect_done_work_entry(user_text: str):
+    text = user_text.strip()
+
+    patterns = [
+        (r"\bi had a meeting with\s+(.+)", "meeting with {value}"),
+        (r"\bi had meeting with\s+(.+)", "meeting with {value}"),
+        (r"\bi met with\s+(.+)", "meeting with {value}"),
+        (r"\bi had a call with\s+(.+)", "call with {value}"),
+        (r"\bi spoke with\s+(.+)", "call with {value}"),
+    ]
+
+    for pattern, template in patterns:
+        match = re.search(pattern, text, flags=re.I)
+
+        if not match:
+            continue
+
+        value = match.group(1).strip(" .,:;-")
+
+        if value:
+            return template.format(value=value)
+
+    return ""
+
+
+def is_done_work_query(user_text: str):
+    text = user_text.lower()
+
+    return any(
+        phrase in text
+        for phrase in [
+            "what productive work have i done",
+            "what productive work i have done",
+            "what prod have i done",
+            "what work have i done",
+            "what have i done for work",
+            "what did i finish today",
+            "what meetings did i have",
+            "what have i completed today",
+        ]
+    )
+
+
+def build_done_work_reply():
+    logged_work = get_done_work_titles()
+    completed_todos_text = get_done_todos_text()
+
+    if not logged_work and completed_todos_text == "No completed tasks yet.":
+        return "You have not logged any productive work yet today, Misu."
+
+    reply_parts = []
+
+    if logged_work:
+        work_text = ", ".join(logged_work[:5])
+        reply_parts.append(f"You logged {work_text}.")
+
+    if completed_todos_text != "No completed tasks yet.":
+        reply_parts.append(f"Completed tasks: {completed_todos_text}.")
+
+    return " ".join(reply_parts)
+
+
+def get_productive_activity_label(app_name: str):
+    lowered = app_name.lower()
+
+    if any(name in lowered for name in ["cursor", "visual studio code", "vs code", "xcode", "sublime text"]):
+        return "coding"
+
+    if "terminal" in lowered or "iterm" in lowered:
+        return "working in"
+
+    if "figma" in lowered:
+        return "designing in"
+
+    if "notion" in lowered:
+        return "planning in"
+
+    if "postman" in lowered:
+        return "testing APIs in"
+
+    return "working in"
+
+
+def format_productive_highlight(item):
+    if not item:
+        return ""
+
+    activity = get_productive_activity_label(item["app_name"])
+
+    if activity == "coding":
+        return (
+            f"You spent most of your productive time coding in {item['app_name']} "
+            f"for {format_duration_minutes(item['minutes'])}."
+        )
+
+    return (
+        f"You spent most of your productive time {activity} {item['app_name']} "
+        f"for {format_duration_minutes(item['minutes'])}."
+    )
+
+
 def get_usage_category_answer(user_text: str):
     text = user_text.lower()
 
@@ -518,6 +643,10 @@ def get_usage_category_answer(user_text: str):
             "spend",
             "usage",
             "time",
+            "productive",
+            "productivity",
+            "focus",
+            "work",
         ]
     ):
         return None
@@ -544,11 +673,11 @@ def get_usage_category_answer(user_text: str):
             today["productive"] + today["neutral"] + today["distracting"],
             2,
         )
-        return f"Monu, I have tracked {format_duration_minutes(total_minutes)} total today."
+        return f"Misu, I have tracked {format_duration_minutes(total_minutes)} total today."
 
     category_minutes = today[category]
     category_label = "productive work" if category == "productive" else f"{category} apps"
-    reply = f"Monu, you have spent {format_duration_minutes(category_minutes)} on {category_label} today."
+    reply = f"Misu, you have spent {format_duration_minutes(category_minutes)} on {category_label} today."
 
     if category == "productive":
         productive_apps = [
@@ -558,12 +687,100 @@ def get_usage_category_answer(user_text: str):
         ]
 
         if productive_apps:
-            top_apps = ", ".join(
-                f'{item["app_name"]} {format_duration_minutes(item["minutes"])}'
-                for item in productive_apps[:3]
-            )
-            reply += f" Top productive apps: {top_apps}."
+            productive_highlight = format_productive_highlight(productive_apps[0])
 
+            if productive_highlight:
+                reply += f" {productive_highlight}"
+
+    return reply
+
+
+def build_local_usage_reply(user_text: str):
+    category_answer = get_usage_category_answer(user_text)
+
+    if category_answer:
+        return category_answer
+
+    rows = get_usage_rows()
+
+    if not rows:
+        return "I have not tracked any app usage yet today, Misu."
+
+    comparison = get_daily_comparison()
+    today = comparison["today"]
+    total_minutes = round(
+        today["productive"] + today["neutral"] + today["distracting"],
+        2,
+    )
+    top_apps = format_top_apps_for_voice(get_top_usage_items())
+    productive_highlight = format_productive_highlight(
+        get_top_usage_items(limit=1, category="productive")[0]
+    ) if get_top_usage_items(limit=1, category="productive") else ""
+
+    reply = (
+        f"Today you spent {format_duration_minutes(today['productive'])} on productive apps, "
+        f"{format_duration_minutes(today['neutral'])} on neutral apps, and "
+        f"{format_duration_minutes(today['distracting'])} on distracting apps."
+    )
+
+    if productive_highlight:
+        reply += f" {productive_highlight}"
+    elif top_apps:
+        reply += f" Your top apps were {top_apps}."
+
+    if total_minutes > 0:
+        reply += f" Total tracked time is {format_duration_minutes(total_minutes)}."
+
+    return reply
+
+
+def build_local_daily_report():
+    rows = get_usage_rows()
+
+    if not rows:
+        return "I do not have enough tracked data for today yet, Misu."
+
+    comparison = get_daily_comparison()
+    today = comparison["today"]
+    pending_text = get_pending_todos_text()
+    top_apps = format_top_apps_for_voice(get_top_usage_items())
+    productive_highlight = format_productive_highlight(
+        get_top_usage_items(limit=1, category="productive")[0]
+    ) if get_top_usage_items(limit=1, category="productive") else ""
+
+    if comparison["productive_delta"] > 0:
+        comparison_line = (
+            f"That is {format_duration_minutes(comparison['productive_delta'])} more productive time than yesterday."
+        )
+    elif comparison["productive_delta"] < 0:
+        comparison_line = (
+            f"That is {format_duration_minutes(abs(comparison['productive_delta']))} less productive time than yesterday."
+        )
+    else:
+        comparison_line = "Your productive time is almost the same as yesterday."
+
+    if today["productive"] >= today["distracting"]:
+        tone = "Overall, your day looks fairly solid."
+    else:
+        tone = "Overall, the day looks a bit scattered."
+
+    improvement = (
+        "Try to protect one focused block and clear one pending task first."
+        if pending_text != "No pending tasks."
+        else "Try to protect one focused block and avoid distracting apps for a while."
+    )
+
+    reply = (
+        f"{tone} You spent {format_duration_minutes(today['productive'])} on productive apps and "
+        f"{format_duration_minutes(today['distracting'])} on distracting apps."
+    )
+
+    if productive_highlight:
+        reply += f" {productive_highlight}"
+    elif top_apps:
+        reply += f" Most of your time went to {top_apps}."
+
+    reply += f" {comparison_line} Pending tasks: {pending_text}. {improvement}"
     return reply
 
 
@@ -575,12 +792,131 @@ def save_reminder_from_parts(title: str, reminder_time: str):
 
     add_reminder(title, remind_at.isoformat())
     spoken_time = remind_at.strftime("%I:%M %p").lstrip("0")
-    return f"Done, Monu. I will remind you about {title} at {spoken_time}."
+    return f"Done, Misu. I will remind you about {title} at {spoken_time}."
+
+
+def clean_social_post_prompt(user_text: str):
+    cleaned = strip_command_words(
+        user_text,
+        [
+            "i want to post about",
+            "i want to post",
+            "post about",
+            "post on twitter about",
+            "post on twitter",
+            "tweet about",
+            "tweet",
+            "write a post about",
+            "write a post",
+            "for twitter",
+            "on twitter",
+            "twitter",
+            "x",
+            "please",
+        ],
+    )
+    return cleaned.strip(" .,:;-")
+
+
+def is_twitter_post_request(user_text: str):
+    text = user_text.lower()
+
+    return any(
+        phrase in text
+        for phrase in [
+            "schedule a post for twitter",
+            "schedule post for twitter",
+            "schedule a twitter post",
+            "make a post for twitter",
+            "write a post for twitter",
+            "draft a post for twitter",
+            "draft a tweet",
+            "write a tweet",
+            "make a tweet",
+            "schedule a tweet",
+            "i want to post on twitter",
+            "i want to post for twitter",
+            "i want to write a tweet",
+            "i want to draft a tweet",
+        ]
+    )
+
+
+def is_twitter_post_query(user_text: str):
+    text = user_text.lower()
+
+    return any(
+        phrase in text
+        for phrase in [
+            "show my twitter post",
+            "show me my twitter post",
+            "what is my twitter post",
+            "what's my twitter post",
+            "give me my twitter post",
+            "show my tweet",
+            "show me my tweet",
+            "what is my tweet",
+            "what's my tweet",
+            "give me my tweet",
+            "twitter draft",
+            "tweet draft",
+        ]
+    )
+
+
+def build_twitter_post_draft(client, source_text: str):
+    cleaned_source = clean_social_post_prompt(source_text) or source_text.strip()
+
+    if client is None:
+        return cleaned_source
+
+    response = client.responses.create(
+        model="gpt-4.1-mini",
+        instructions="""
+You write concise Twitter posts.
+Turn the user's topic into one ready-to-post tweet.
+Keep it clear, natural, and engaging.
+Return only the post text.
+Do not use markdown.
+Prefer staying under 280 characters.
+""",
+        input=cleaned_source,
+    )
+
+    return response.output_text.strip() or cleaned_source
+
+
+def get_latest_twitter_post_reply():
+    row = get_latest_social_post("twitter")
+
+    if not row:
+        return "You do not have any Twitter post draft yet, Misu."
+
+    _post_id, _platform, _source_text, draft_text, _created_at = row
+    return f"Here is your Twitter post, Misu. {draft_text}"
 
 
 def extract_app_category_preference(user_text: str):
     text = user_text.strip()
     lowered = text.lower()
+
+    if not any(
+        phrase in lowered
+        for phrase in [
+            "mark ",
+            "treat ",
+            "set ",
+            "consider ",
+            "this app is",
+            " is productive",
+            " is distracting",
+            " is neutral",
+            " as productive",
+            " as distracting",
+            " as neutral",
+        ]
+    ):
+        return None
 
     category = None
 
@@ -639,50 +975,60 @@ def extract_app_category_preference(user_text: str):
 
 
 def handle_pending_action(user_text: str):
-    if pending_action["type"] != "add_reminder":
-        return None
+    if pending_action["type"] == "add_reminder":
+        time_match = TIME_PATTERN.search(user_text)
 
-    time_match = TIME_PATTERN.search(user_text)
+        if not time_match:
+            return None
 
-    if not time_match:
-        return None
+        reminder_time = time_match.group(0).strip()
+        title_from_reply = TIME_PATTERN.sub(" ", user_text)
+        title_from_reply = strip_command_words(
+            title_from_reply,
+            [
+                "remember",
+                "remember this",
+                "remind",
+                "remind me",
+                "reminder",
+                "this",
+                "that",
+                "i have",
+                "i have a",
+                "i have an",
+                "about",
+                "at",
+                "on",
+                "to",
+                "please",
+            ],
+        )
+        title = title_from_reply or pending_action["title"]
 
-    reminder_time = time_match.group(0).strip()
-    title_from_reply = TIME_PATTERN.sub(" ", user_text)
-    title_from_reply = strip_command_words(
-        title_from_reply,
-        [
-            "remember",
-            "remember this",
-            "remind",
-            "remind me",
-            "reminder",
-            "this",
-            "that",
-            "i have",
-            "i have a",
-            "i have an",
-            "about",
-            "at",
-            "on",
-            "to",
-            "please",
-        ],
-    )
-    title = title_from_reply or pending_action["title"]
+        if not title or title == "reminder":
+            title = user_text
 
-    if not title or title == "reminder":
-        title = user_text
+        reply = save_reminder_from_parts(title, reminder_time)
 
-    reply = save_reminder_from_parts(title, reminder_time)
+        if not reply:
+            return None
 
-    if not reply:
-        return None
+        pending_action["type"] = ""
+        pending_action["title"] = ""
+        pending_action["platform"] = ""
 
-    pending_action["type"] = ""
-    pending_action["title"] = ""
+        return reply
 
-    return reply
+    if pending_action["type"] == "draft_social_post":
+        client = get_openai_client()
+        draft_text = build_twitter_post_draft(client, user_text)
+        save_social_post(pending_action["platform"] or "twitter", user_text, draft_text)
+        pending_action["type"] = ""
+        pending_action["title"] = ""
+        pending_action["platform"] = ""
+        return f"Done, Misu. I drafted your Twitter post. Ask me for your Twitter post anytime."
+
+    return None
 
 
 def handle_local_actions(user_text: str):
@@ -691,20 +1037,23 @@ def handle_local_actions(user_text: str):
     if pending_reply:
         return pending_reply
 
-    usage_category_answer = get_usage_category_answer(user_text)
+    if is_twitter_post_request(user_text):
+        pending_action["type"] = "draft_social_post"
+        pending_action["title"] = ""
+        pending_action["platform"] = "twitter"
+        return "Okay, Misu. Tell me what you want to post."
 
-    if usage_category_answer:
-        return usage_category_answer
+    if is_twitter_post_query(user_text):
+        return get_latest_twitter_post_reply()
 
-    app_preference = extract_app_category_preference(user_text)
+    done_work_entry = detect_done_work_entry(user_text)
 
-    if app_preference:
-        app_name, category = app_preference
-        saved_app_name = set_app_category(app_name, category)
+    if done_work_entry:
+        save_done_work(done_work_entry)
+        return f"Okay, Misu. I saved {done_work_entry} in the things you have done."
 
-        if saved_app_name:
-            spoken_category = "distracting" if category == "distracting" else category
-            return f"Got it, Monu. I will treat {saved_app_name} as {spoken_category} from now."
+    if is_done_work_query(user_text):
+        return build_done_work_reply()
 
     client = get_openai_client()
     intent_data = detect_intent(client, user_text)
@@ -718,49 +1067,52 @@ def handle_local_actions(user_text: str):
 
     print("INTENT:", intent_data)
 
+    if intent == "ask_usage":
+        return build_local_usage_reply(user_text)
+
+    if intent == "daily_report":
+        return build_local_daily_report()
+
     if intent == "add_todo":
-        if not has_todo_language(user_text.lower()):
+        if not task:
             if has_reminder_language(user_text.lower()):
                 intent = "add_reminder"
             elif has_idea_language(user_text.lower()):
                 intent = "save_idea"
                 idea = idea or task or user_text
             else:
-                return "Got it, Monu. Should I save that as an idea or make it a todo?"
+                return "Sure, Misu. Tell me the task you want me to add."
 
     if intent == "add_todo":
-        if not task:
-            return "Sure, Monu. Tell me the tasks you want on the list, one by one or in one sentence."
-
         add_todo(task)
-        return f"Done, Monu. I added {task} to your list."
+        return f"Done, Misu. I added {task} to your list."
 
     if intent == "delete_todo":
         if not task:
-            return "Sure, Monu. Which task should I remove?"
+            return "Sure, Misu. Which task should I remove?"
 
         if task.lower() in {"__all__", "both", "all", "everything", "entire list", "my list"}:
             deleted_titles = delete_all_todos()
 
             if not deleted_titles:
-                return "Your todo list is already empty, Monu."
+                return "Your todo list is already empty, Misu."
 
             if len(deleted_titles) == 1:
-                return f"Done, Monu. I removed {deleted_titles[0]} from your todo list."
+                return f"Done, Misu. I removed {deleted_titles[0]} from your todo list."
 
             if len(deleted_titles) == 2:
                 deleted_text = " and ".join(deleted_titles)
             else:
                 deleted_text = ", ".join(deleted_titles[:-1]) + f", and {deleted_titles[-1]}"
 
-            return f"Done, Monu. I removed both tasks: {deleted_text}." if len(deleted_titles) == 2 else f"Done, Monu. I cleared {len(deleted_titles)} tasks from your todo list: {deleted_text}."
+            return f"Done, Misu. I removed both tasks: {deleted_text}." if len(deleted_titles) == 2 else f"Done, Misu. I cleared {len(deleted_titles)} tasks from your todo list: {deleted_text}."
 
         deleted_title = delete_todo_by_text(task)
 
         if deleted_title:
-            return f"Done, Monu. I removed {deleted_title} from your todo list."
+            return f"Done, Misu. I removed {deleted_title} from your todo list."
 
-        return f"I could not find {task} in your todo list, Monu. Want me to read the current tasks?"
+        return f"I could not find {task} in your todo list, Misu. Want me to read the current tasks?"
 
     if intent == "complete_todo":
         if not task:
@@ -770,38 +1122,39 @@ def handle_local_actions(user_text: str):
             completed_title = complete_single_pending_todo()
 
             if not completed_title:
-                return "I need one clear task name, Monu. Which task did you finish?"
+                return "I need one clear task name, Misu. Which task did you finish?"
         else:
             completed_title = complete_todo_by_text(task)
 
         if completed_title:
-            return f"Nice, Monu. I marked {completed_title} as done."
+            save_done_work(completed_title)
+            return f"Nice, Misu. I marked {completed_title} as done."
 
-        return f"I could not find {task}, Monu."
+        return f"I could not find {task}, Misu."
 
     if intent == "show_todos":
         if task == "__pending__":
             pending_text = get_pending_todos_text()
-            return f"Here is what is pending, Monu. {pending_text}"
+            return f"Here is what is pending, Misu. {pending_text}"
 
         if task == "__done__":
             done_text = get_done_todos_text()
-            return f"Here is what is done, Monu. {done_text}"
+            return f"Here is what is done, Misu. {done_text}"
 
         pending_text = get_pending_todos_text()
         done_text = get_done_todos_text()
-        return f"Here is your todo list, Monu. Pending: {pending_text}. Done: {done_text}."
+        return f"Here is your todo list, Misu. Pending: {pending_text}. Done: {done_text}."
 
     if intent == "save_idea":
         if not idea:
             return "Sure, tell me the idea."
 
         save_idea(idea)
-        return f"Nice, Monu. I saved that idea."
+        return f"Nice, Misu. I saved that idea."
 
     if intent == "show_ideas":
         ideas_text = get_ideas_text()
-        return f"Here are your saved ideas, Monu. {ideas_text}"
+        return f"Here are your saved ideas, Misu. {ideas_text}"
 
     if intent == "add_reminder":
         if not reminder_title:
@@ -823,96 +1176,17 @@ def handle_local_actions(user_text: str):
 
     if intent == "show_reminders":
         reminders_text = get_reminders_text()
-        return f"Here are your reminders, Monu. {reminders_text}"
+        return f"Here are your reminders, Misu. {reminders_text}"
 
-    if intent == "ask_usage":
-        client = get_openai_client()
+    app_preference = extract_app_category_preference(user_text)
 
-        if client is None:
-            return "Vexa is not configured with the server OpenAI API key yet."
+    if app_preference:
+        app_name, category = app_preference
+        saved_app_name = set_app_category(app_name, category)
 
-        usage_text = get_today_usage_text()
-        productivity_text = get_productivity_summary_text()
-        comparison_text = get_daily_comparison_text()
-
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            instructions=f"""
-You are Vexa, a voice-first productivity assistant.
-The user's name is Monu.
-{FRIENDLY_VOICE_STYLE}
-
-Today's app usage data:
-{usage_text}
-
-Productivity summary:
-{productivity_text}
-
-Comparison:
-{comparison_text}
-
-The user is asking about usage or productivity.
-Answer directly using today's data. If they ask about yesterday or comparison, use the comparison data.
-Do not say you do not have access to usage data.
-""",
-            input=user_text,
-        )
-
-        return response.output_text
-
-    if intent == "daily_report":
-        client = get_openai_client()
-
-        if client is None:
-            return "Vexa is not configured with the server OpenAI API key yet."
-
-        usage_text = get_today_usage_text()
-        productivity_text = get_productivity_summary_text()
-        comparison_text = get_daily_comparison_text()
-        todos_text = get_todos_text()
-        ideas_text = get_ideas_text()
-        reminders_text = get_reminders_text()
-
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            instructions=f"""
-You are Vexa, a voice-first productivity assistant.
-The user's name is Monu.
-{FRIENDLY_VOICE_STYLE}
-
-Today's app usage data:
-{usage_text}
-
-Productivity summary:
-{productivity_text}
-
-Comparison:
-{comparison_text}
-
-Current todo list:
-{todos_text}
-
-Saved ideas:
-{ideas_text}
-
-Upcoming reminders:
-{reminders_text}
-
-Create a short spoken daily productivity report.
-Include:
-1. productive time
-2. distracting time
-3. top used apps
-4. pending tasks
-5. one improvement suggestion
-
-Keep it natural, friendly, and under 6 sentences.
-Do not say you do not have access to usage data, todos, ideas, or reminders.
-""",
-            input=user_text,
-        )
-
-        return response.output_text
+        if saved_app_name:
+            spoken_category = "distracting" if category == "distracting" else category
+            return f"Got it, Misu. I will treat {saved_app_name} as {spoken_category} from now."
 
     return None
 
@@ -935,7 +1209,7 @@ def get_conversation_memory_text():
     lines = []
 
     for item in conversation_memory[-8:]:
-        lines.append(f"Monu: {item['user']}")
+        lines.append(f"Misu: {item['user']}")
         lines.append(f"Vexa: {item['vexa']}")
 
     return "\n".join(lines)
@@ -958,7 +1232,7 @@ def build_general_reply(client, user_text: str):
     response = client.responses.create(
         model="gpt-4.1-mini",
         instructions=f"""
-You are Vexa, Monu's voice-first AI companion.
+You are Vexa, Misu's voice-first AI companion.
 You can help with productivity, but you are also good at normal human conversation.
 {FRIENDLY_VOICE_STYLE}
 
@@ -999,14 +1273,15 @@ Custom app preferences:
 {app_preferences_text}
 
 Behavior:
-- If Monu is casually talking, respond conversationally and emotionally aware.
-- If Monu talks about his day, ask or say something that naturally continues the conversation.
-- If Monu asks what he did today or how he spent time, use tracked app usage and ask about the human side of his day.
-- If Monu says he wants to talk for a while, say yes warmly and invite him to tell you what's on his mind.
-- If Monu asks about app usage, distraction, productivity, todos, pending tasks, completed tasks, ideas, or reminders, use the data above.
-- If Monu asks about yesterday, use the comparison data and yesterday values.
-- If Monu asks for a report, summarize today or yesterday clearly with productive time, distracting time, top apps, tasks, and reminders.
-- Do not mention internal data unless it is relevant to what Monu asked.
+- If Misu is casually talking, respond conversationally and emotionally aware.
+- If Misu talks about his day, ask or say something that naturally continues the conversation.
+- If Misu wants to discuss an idea, say yes naturally and help him think it through instead of saving it unless he explicitly asks to save it.
+- If Misu asks what he did today or how he spent time, use tracked app usage and ask about the human side of his day.
+- If Misu says he wants to talk for a while, say yes warmly and invite him to tell you what's on his mind.
+- If Misu asks about app usage, distraction, productivity, todos, pending tasks, completed tasks, ideas, or reminders, use the data above.
+- If Misu asks about yesterday, use the comparison data and yesterday values.
+- If Misu asks for a report, summarize today or yesterday clearly with productive time, distracting time, top apps, tasks, and reminders.
+- Do not mention internal data unless it is relevant to what Misu asked.
 - Do not say you cannot have a normal conversation.
 - Sound like one intelligent, friendly person speaking, not a command parser.
 """,
@@ -1140,7 +1415,7 @@ def build_voice_reply(client, user_text: str):
     if not user_text:
         return {
             "transcript": user_text,
-            "reply": "I didn't catch that, Monu. Say it again?",
+            "reply": "I didn't catch that, Misu. Say it again?",
         }
 
     local_reply = handle_local_actions(user_text)

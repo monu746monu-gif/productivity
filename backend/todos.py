@@ -58,7 +58,7 @@ def get_todos_text():
     todos = get_todos()
 
     if not todos:
-        return "No todos yet."
+        return "Nothing in your to do list."
 
     lines = []
 
@@ -108,7 +108,7 @@ def format_todo_rows(rows, empty_text: str):
 
 
 def get_pending_todos_text():
-    return format_todo_rows(get_pending_todos(), "No pending tasks.")
+    return format_todo_rows(get_pending_todos(), "Nothing in your to do list.")
 
 
 def get_done_todos_text():

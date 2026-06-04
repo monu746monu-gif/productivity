@@ -87,7 +87,7 @@ def save_reminder_from_parts(title: str, reminder_time: str):
 
     add_reminder(title, remind_at.isoformat())
     spoken_time = remind_at.strftime("%I:%M %p").lstrip("0")
-    return f"Okay Monu, I will remind you about {title} at {spoken_time}."
+    return f"Okay Misu, I will remind you about {title} at {spoken_time}."
 
 
 def handle_pending_action(user_text: str):
@@ -154,16 +154,16 @@ def handle_local_actions(user_text: str):
                 intent = "save_idea"
                 intent_data["idea"] = intent_data.get("idea") or intent_data.get("task") or user_text
             else:
-                return "Should I save that as an idea or add it as a todo, Monu?"
+                return "Should I save that as an idea or add it as a todo, Misu?"
 
     if intent == "add_todo":
         task = intent_data.get("task", "").strip()
 
         if not task:
-            return "What task should I add, Monu?"
+            return "What task should I add, Misu?"
 
         add_todo(task)
-        return f"Done Monu, I added {task} to your todo list."
+        return f"Done Misu, I added {task} to your todo list."
 
     if intent == "show_todos":
         todos_text = get_todos_text()
@@ -173,10 +173,10 @@ def handle_local_actions(user_text: str):
         idea = intent_data.get("idea", "").strip()
 
         if not idea:
-            return "What idea should I save, Monu?"
+            return "What idea should I save, Misu?"
 
         save_idea(idea)
-        return f"Got it, Monu. I saved that idea: {idea}"
+        return f"Got it, Misu. I saved that idea: {idea}"
 
     if intent == "show_ideas":
         ideas_text = get_ideas_text()
@@ -189,7 +189,7 @@ def handle_local_actions(user_text: str):
         if not reminder_title:
             pending_action["type"] = "add_reminder"
             pending_action["title"] = ""
-            return "What should I remind you about, Monu?"
+            return "What should I remind you about, Misu?"
 
         if not reminder_time:
             pending_action["type"] = "add_reminder"
@@ -225,7 +225,7 @@ def ask_vexa(user_text: str):
         model="gpt-4.1-mini",
         instructions=f"""
 You are Vexa, a friendly voice-first AI productivity companion.
-The user's name is Monu.
+The user's name is Misu.
 
 Today's app usage data:
 {today_usage}
@@ -262,7 +262,7 @@ def listen_for_wake_word():
 
         text = transcribe_audio(
             audio_file,
-            prompt="The user may say: Hey Vexa, Hey Vexa, Hey Jarvis, Hey Monu.",
+            prompt="The user may say: Hey Vexa, Hey Vexa, Hey Jarvis, Hey Misu.",
         ).lower()
 
         print("Wake heard:", text)
@@ -274,7 +274,7 @@ def listen_for_wake_word():
 
 
 def listen_for_command():
-    speak("Hey Monu, what's going on?")
+    speak("Hey Misu, what's going on?")
     print("Listening for command...")
 
     audio_file = record_audio(filename="command.wav", duration=8)

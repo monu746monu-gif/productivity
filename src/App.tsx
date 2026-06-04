@@ -332,8 +332,8 @@ function MainApp() {
       const title = reminders.map((reminder: any) => reminder.title).join(", ");
       const reminderText =
         reminders.length === 1
-          ? `Reminder, Monu: ${title}`
-          : `Reminders, Monu: ${title}`;
+          ? `Reminder, Misu: ${title}`
+          : `Reminders, Misu: ${title}`;
 
       setStatus("Reminder");
       setReply(reminderText);
@@ -408,7 +408,7 @@ function MainApp() {
       }
 
       const vexaReply = shouldStop
-        ? "Okay Monu, I will stop listening."
+        ? "Okay Misu, I will stop listening."
         : data.reply || "Done.";
 
       setStatus("Speaking...");
@@ -489,7 +489,7 @@ function MainApp() {
         return;
       }
 
-      const greeting = "Hey Monu, what's going on?";
+      const greeting = "Hey Misu, what's going on?";
       continuousConversationRef.current = true;
       setStatus("Speaking...");
       setReply(greeting);

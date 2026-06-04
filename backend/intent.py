@@ -4,13 +4,12 @@ from openai import OpenAI
 
 
 TIME_PATTERN = re.compile(
-    r"\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?\b",
+    r"\b(?:at\s+)?\d{1,2}(?:(?::|\s)\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?\b",
     re.I,
 )
 
 TODO_WORDS = ["todo", "to do", "task", "checklist", "action item"]
 TODO_ADD_WORDS = ["add", "create", "put", "make"]
-TODO_DELETE_WORDS = ["delete", "remove", "clear", "take out"]
 IDEA_WORDS = [
     "idea",
     "thought",
@@ -21,6 +20,75 @@ IDEA_WORDS = [
 ]
 IDEA_SAVE_WORDS = ["save", "remember", "note", "store", "capture"]
 REMINDER_WORDS = ["remind", "reminder", "meeting", "call", "appointment", "event"]
+IDEA_DISCUSSION_PHRASES = [
+    "discuss this idea with you",
+    "discuss this idea",
+    "discuss the idea with you",
+    "discuss the idea",
+    "discuss an idea with you",
+    "discuss an idea",
+    "discuss idea with you",
+    "discuss idea",
+    "talk about this idea",
+    "talk about the idea",
+    "talk about an idea",
+    "talk through this idea",
+    "talk through the idea",
+    "talk through an idea",
+    "brainstorm this idea with you",
+    "brainstorm the idea with you",
+    "brainstorm an idea with you",
+    "brainstorm with you",
+    "i want to discuss this idea with you",
+    "i want to discuss the idea with you",
+    "i want to discuss an idea with you",
+    "i want to discuss idea with you",
+    "let's discuss this idea",
+    "lets discuss this idea",
+    "let's discuss the idea",
+    "lets discuss the idea",
+]
+USAGE_QUESTION_PHRASES = [
+    "how productive was i today",
+    "how productive have i been today",
+    "how much did i work today",
+    "how much focus time did i have",
+    "how much productive time",
+    "how much time did i spend",
+    "how did i spend my day",
+    "how have i spent my day",
+    "what did i do today",
+    "where did my time go",
+]
+DAILY_REPORT_PHRASES = [
+    "how was my day",
+    "give me my daily report",
+    "daily report",
+    "summarize my day",
+    "summary of my day",
+    "what should i improve",
+    "give me a productivity summary",
+    "productivity summary",
+]
+PENDING_TODO_PHRASES = [
+    "what is pending",
+    "what's pending",
+    "show pending tasks",
+    "show pending todos",
+    "pending tasks",
+    "pending todos",
+    "what do i still have to do",
+]
+DONE_TODO_PHRASES = [
+    "what is done",
+    "what's done",
+    "show completed tasks",
+    "show completed todos",
+    "completed tasks",
+    "completed todos",
+    "finished tasks",
+    "done tasks",
+]
 
 
 def has_any(text: str, words):
@@ -39,6 +107,10 @@ def has_idea_language(text: str):
 
 def has_reminder_language(text: str):
     return "remind me" in text or has_any(text, REMINDER_WORDS)
+
+
+def has_idea_discussion_language(text: str):
+    return any(phrase in text for phrase in IDEA_DISCUSSION_PHRASES)
 
 
 def strip_command_words(text: str, phrases):
@@ -84,56 +156,130 @@ def extract_after_keyword(user_text: str, keywords):
     return ""
 
 
+def extract_todo_from_patterns(user_text: str):
+    patterns = [
+        r"\b(?:add|create|put|save|make)\s+(.+?)\s+(?:to|on|into)\s+(?:my\s+)?(?:todo|to do|task list|list)\b",
+        r"\b(?:add|create|put|save|make)\s+(.+?)\s+as\s+(?:a\s+)?(?:todo|task|action item)\b",
+        r"\b(?:i need to|i have to|i should|i must)\s+(.+)",
+        r"\b(?:my task is to|one task is to)\s+(.+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, user_text, flags=re.I)
+
+        if match:
+            task = match.group(1).strip(" .,:;-")
+
+            if task:
+                return task
+
+    return ""
+
+
+def extract_todo_completion_text(user_text: str):
+    patterns = [
+        r"\b(?:i finished|i completed|i did|i am done with|i'm done with)\s+(.+)",
+        r"\b(?:mark|set)\s+(.+?)\s+as\s+(?:done|completed|finished)\b",
+        r"\b(.+?)\s+(?:is|was)\s+(?:done|completed|finished)\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, user_text, flags=re.I)
+
+        if match:
+            task = match.group(1).strip(" .,:;-")
+
+            if task:
+                return task
+
+    return ""
+
+
+def extract_todo_delete_text(user_text: str):
+    patterns = [
+        r"\b(?:remove|delete|clear|take off|take out)\s+(.+?)\s+(?:from\s+)?(?:my\s+)?(?:todo|to do|task list|list)\b",
+        r"\b(?:remove|delete|clear|take off|take out)\s+(.+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, user_text, flags=re.I)
+
+        if match:
+            task = match.group(1).strip(" .,:;-")
+
+            if task:
+                normalized_task = task.lower()
+
+                if normalized_task in {
+                    "my",
+                    "all",
+                    "everything",
+                    "all tasks",
+                    "all task",
+                    "all the tasks",
+                    "all the task",
+                    "the tasks",
+                    "the task",
+                    "entire list",
+                    "whole list",
+                    "my list",
+                    "todo list",
+                    "to do list",
+                }:
+                    return "__all__"
+
+                return task
+
+    return ""
+
+
+def clean_reminder_title(user_text: str):
+    title = TIME_PATTERN.sub(" ", user_text)
+    title = strip_command_words(
+        title,
+        [
+            "remember",
+            "remember this",
+            "remind",
+            "remind me",
+            "set reminder",
+            "create reminder",
+            "save reminder",
+            "i want you to",
+            "i want to",
+            "i need to",
+            "please",
+            "that",
+            "this",
+            "about",
+            "for",
+            "at",
+            "on",
+            "to",
+        ],
+    )
+    title = re.sub(r"^(?:check upon|check on|check|look at|review)\s+", "", title, flags=re.I)
+    title = re.sub(r"\s+", " ", title).strip(" .,:;-")
+    return title
+
+
 def detect_rule_based_intent(user_text: str):
     text = user_text.lower().strip()
     time_match = TIME_PATTERN.search(user_text)
 
-    if any(phrase in text for phrase in ["make a todo list", "make a to do list", "create a todo list", "schedule my day"]):
-        task = strip_command_words(
-            user_text,
-            [
-                "make a todo list",
-                "make a to do list",
-                "create a todo list",
-                "schedule my day",
-                "schedule",
-                "my day",
-                "todo list",
-                "to do list",
-                "please",
-            ],
-        )
-
+    if any(phrase in text for phrase in DAILY_REPORT_PHRASES):
         return {
-            "intent": "add_todo",
-            "task": task,
+            "intent": "daily_report",
+            "task": "",
             "app_name": "",
             "idea": "",
             "reminder_title": "",
             "reminder_time": "",
         }
 
-    if any(
-        phrase in text
-        for phrase in [
-            "talk to you",
-            "talk with you",
-            "chat with you",
-            "talk for some time",
-            "talk for a while",
-            "normal conversation",
-            "just want to talk",
-            "my day",
-            "about my day",
-            "how was my day",
-            "i am feeling",
-            "i feel",
-            "i'm feeling",
-            "i had a",
-        ]
-    ):
+    if any(phrase in text for phrase in USAGE_QUESTION_PHRASES):
         return {
-            "intent": "general_chat",
+            "intent": "ask_usage",
             "task": "",
             "app_name": "",
             "idea": "",
@@ -161,116 +307,100 @@ def detect_rule_based_intent(user_text: str):
             "reminder_time": "",
         }
 
+    if any(phrase in text for phrase in PENDING_TODO_PHRASES):
+        return {
+            "intent": "show_todos",
+            "task": "__pending__",
+            "app_name": "",
+            "idea": "",
+            "reminder_title": "",
+            "reminder_time": "",
+        }
+
+    if any(phrase in text for phrase in DONE_TODO_PHRASES):
+        return {
+            "intent": "show_todos",
+            "task": "__done__",
+            "app_name": "",
+            "idea": "",
+            "reminder_title": "",
+            "reminder_time": "",
+        }
+
+    if has_idea_discussion_language(text):
+        return {
+            "intent": "general_chat",
+            "task": "",
+            "app_name": "",
+            "idea": "",
+            "reminder_title": "",
+            "reminder_time": "",
+        }
+
     if any(
         phrase in text
         for phrase in [
-            "what is pending",
-            "what are pending",
-            "what tasks are pending",
-            "pending tasks",
-            "show pending",
-            "what is left",
-            "what tasks are left",
-            "what is done",
-            "what are done",
-            "completed tasks",
-            "done tasks",
             "show my todo",
             "show todos",
             "what are my tasks",
+            "what are my todos",
             "what tasks",
+            "what is on my list",
+            "what's on my list",
             "read my todo",
             "read my tasks",
         ]
     ):
         return {
             "intent": "show_todos",
-            "task": "__pending__" if any(phrase in text for phrase in ["pending", "left"]) else "__done__" if any(phrase in text for phrase in ["done", "completed"]) else "",
+            "task": "",
             "app_name": "",
             "idea": "",
             "reminder_title": "",
             "reminder_time": "",
         }
 
-    if any(
-        phrase in text
-        for phrase in [
-            "i am done with",
-            "i'm done with",
-            "i finished",
-            "i completed",
-            "mark done",
-            "mark as done",
-        ]
-    ):
-        task = strip_command_words(
-            user_text,
-            [
-                "i am done with",
-                "i'm done with",
-                "i finished",
-                "i completed",
-                "mark",
-                "mark as",
-                "done",
-                "complete",
-                "completed",
-                "this task",
-                "this",
-                "task",
-                "please",
-            ],
-        )
+    completed_task = extract_todo_completion_text(user_text)
 
-        if not task and any(phrase in text for phrase in ["this task", "this"]):
-            task = "__current__"
-
+    if completed_task:
         return {
             "intent": "complete_todo",
-            "task": task,
+            "task": completed_task,
             "app_name": "",
             "idea": "",
             "reminder_title": "",
             "reminder_time": "",
         }
 
-    if has_any(text, TODO_DELETE_WORDS) and (
-        has_todo_language(text)
-        or any(phrase in text for phrase in ["both", "all", "everything", "entire list", "my list"])
-    ):
-        task = strip_command_words(
-            user_text,
-            [
-                "delete",
-                "remove",
-                "clear",
-                "take out",
-                "from my todo list",
-                "from todo list",
-                "from my to do list",
-                "from my list",
-                "my todo list",
-                "todo list",
-                "to do list",
-                "todos",
-                "todo",
-                "tasks",
-                "task",
-                "both of them",
-                "all of them",
-                "please",
-            ],
-        )
+    deleted_task = extract_todo_delete_text(user_text)
 
-        if not task and any(phrase in text for phrase in ["both", "all", "everything", "entire list", "clear"]):
-            task = "__all__"
-
-        if task.lower() in {"both", "all", "everything", "entire list", "my list"}:
-            task = "__all__"
-
+    if deleted_task:
         return {
             "intent": "delete_todo",
-            "task": task,
+            "task": deleted_task,
+            "app_name": "",
+            "idea": "",
+            "reminder_title": "",
+            "reminder_time": "",
+        }
+
+    natural_task = extract_todo_from_patterns(user_text)
+
+    if natural_task and time_match and has_reminder_language(text):
+        reminder_title = clean_reminder_title(natural_task) or natural_task
+        return {
+            "intent": "add_reminder",
+            "task": "",
+            "app_name": "",
+            "idea": "",
+            "reminder_title": reminder_title,
+            "reminder_time": time_match.group(0),
+        }
+
+    if natural_task and not has_idea_language(text):
+        return {
+            "intent": "add_todo",
+            "task": natural_task,
             "app_name": "",
             "idea": "",
             "reminder_title": "",
@@ -279,27 +409,7 @@ def detect_rule_based_intent(user_text: str):
 
     if has_reminder_language(text):
         reminder_time = time_match.group(0) if time_match else ""
-        title = TIME_PATTERN.sub(" ", user_text)
-        title = strip_command_words(
-            title,
-            [
-                "remember",
-                "remember this",
-                "remind",
-                "remind me",
-                "reminder",
-                "this",
-                "that",
-                "i have",
-                "i have a",
-                "i have an",
-                "about",
-                "at",
-                "on",
-                "to",
-                "please",
-            ],
-        )
+        title = clean_reminder_title(user_text)
 
         if not title:
             title = "reminder"
@@ -315,7 +425,10 @@ def detect_rule_based_intent(user_text: str):
 
     idea_phrases = ["save this", "remember this", "note this", "write this down", "store this"]
 
-    if has_idea_language(text) or any(phrase in text for phrase in idea_phrases):
+    if (
+        (has_idea_language(text) or any(phrase in text for phrase in idea_phrases))
+        and not has_idea_discussion_language(text)
+    ):
         idea = extract_after_keyword(user_text, IDEA_WORDS)
 
         if not idea:
@@ -463,7 +576,13 @@ Rules:
 - If user says "remember X" and X includes a time, meeting, call, event, or "remind me", intent is add_reminder, not save_idea or add_todo.
 - If user says "I have an idea X", "my idea is X", or "save my idea X", intent is save_idea and idea is X.
 - If user says "what are my tasks", intent is show_todos.
+- If user says "what is pending" or "show pending tasks", intent is show_todos and task is __pending__.
+- If user says "what is done" or "show completed tasks", intent is show_todos and task is __done__.
 - If user asks "how much time did I spend on Cursor", intent is ask_usage and app_name is Cursor.
+- If user asks "how productive was I today" or "how did I spend my day", intent is ask_usage.
+- If user asks "how was my day" or "give me my daily report", intent is daily_report.
+- If user says "I have to X" or "I need to X", intent is add_todo and task is X.
+- If user says "I finished X" or "X is done", intent is complete_todo and task is X.
 - If user says "remember this idea X", intent is save_idea and idea is X.
 - If user says "save this idea X", intent is save_idea and idea is X.
 - If user says "what ideas did I save", intent is show_ideas.
